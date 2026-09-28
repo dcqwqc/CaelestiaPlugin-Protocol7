@@ -1,82 +1,70 @@
-
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import dcqwqc.protocol7.services as P7
 
-// Protocol7 Caelestia plugin root.
-// This is a `custom` entry point that lives at the shell root. It:
-//   1. Receives settings injected by the plugin loader as `settings`
-//   2. Writes them into ~/.config/protocol-7/config.json so the Python daemon picks them up
-//   3. Ensures the Python daemon is running (starts it if not)
-//   4. Stops/restarts the daemon when settings change or the plugin is disabled
+// Protocol7 backend controller. The waveform itself is a shell-panel entry
+// rendered by Caelestia's shared drawer surface.
 Scope {
     id: root
 
-    // Injected by the Caelestia plugin loader — rebuilt on every plugin reload.
     property var settings: null
 
-    // ── Config bridge ─────────────────────────────────────────────────────
-    // Write Caelestia plugin settings → protocol-7 config.json whenever they change.
-    // The Python daemon watches the file for changes and picks them up live.
     readonly property string configPath: `${Quickshell.env("HOME")}/.config/protocol-7/config.json`
     readonly property string daemonScript: `${Quickshell.env("HOME")}/protocol-7/main.py`
+    readonly property string configBridgeScript: `${Quickshell.env("HOME")}/protocol-7/plugin_config_bridge.py`
     readonly property string venvPython: `${Quickshell.env("HOME")}/protocol-7/venv/bin/python`
 
-    function applySettings(): void {
-        if (!settings) return;
+    property bool writeQueued: false
+    property bool restartRequested: false
+    property bool initialBackendAttach: true
+
+    readonly property string patchJson: {
+        if (!settings)
+            return "{}";
+
+        return JSON.stringify({
+            use_groq: settings.useGroq,
+            groq_api_key: settings.groqApiKey,
+            groq_model: settings.groqModel,
+            model_size: settings.modelSize,
+            auto_detect_language: settings.autoDetectLanguage,
+            language: settings.language,
+            translate: settings.translate,
+            enable_llm_rewrite: settings.enableLlmRewrite,
+            llm_backend: settings.llmBackend,
+            llama_repo: settings.llamaRepo,
+            llama_filename: settings.llamaFilename,
+            ollama_endpoint: settings.ollamaEndpoint,
+            ollama_model: settings.ollamaModel,
+            llm_system_prompt: settings.llmSystemPrompt,
+            input_device: settings.inputDevice === -1 ? null : settings.inputDevice,
+            accent_color: settings.accentColor,
+            use_caelestia_colors: settings.useCaelestiaColors,
+            autostart: settings.autostart,
+            show_tray: false,
+            native_caelestia_ui: true
+        });
+    }
+
+    function applySettings(restartDaemon: bool): void {
+        if (!settings)
+            return;
+
+        restartRequested = restartRequested || restartDaemon;
+        if (writeConfig.running) {
+            writeQueued = true;
+            return;
+        }
         writeConfig.running = true;
     }
 
-    // Build a jq command that merges new settings into the existing JSON file,
-    // creating it if absent.
-    readonly property var jqArgs: {
-        if (!settings) return [];
-        const s = settings;
-        const patch = JSON.stringify({
-            use_groq: s.useGroq,
-            groq_api_key: s.groqApiKey,
-            groq_model: s.groqModel,
-            model_size: s.modelSize,
-            auto_detect_language: s.autoDetectLanguage,
-            language: s.language,
-            translate: s.translate,
-            enable_llm_rewrite: s.enableLlmRewrite,
-            llm_backend: s.llmBackend,
-            llama_repo: s.llamaRepo,
-            llama_filename: s.llamaFilename,
-            ollama_endpoint: s.ollamaEndpoint,
-            ollama_model: s.ollamaModel,
-            llm_system_prompt: s.llmSystemPrompt,
-            input_device: s.inputDevice === -1 ? null : s.inputDevice,
-            accent_color: s.accentColor,
-            use_caelestia_colors: s.useCaelestiaColors,
-            autostart: s.autostart,
-            // Tell main.py not to start the tray — Caelestia is the shell
-            show_tray: false
-        });
-        return ["bash", "-c",
-            `cfg="${root.configPath}"; ` +
-            `tmp=$(mktemp); ` +
-            `if [ -f "$cfg" ]; then jq '. * ${patch}' "$cfg" > "$tmp" && mv "$tmp" "$cfg"; ` +
-            `else echo '${patch}' | jq '.' > "$cfg"; fi`
-        ];
-    }
-
-    Process {
-        id: writeConfig
-        command: root.jqArgs
-        running: false
-        onExited: code => {
-            if (code === 0) daemonManager.ensureRunning();
-        }
-    }
-
-    // ── Daemon lifecycle ──────────────────────────────────────────────────
     QtObject {
         id: daemonManager
 
         function ensureRunning(): void {
-            checkProc.running = true;
+            if (!startProc.running)
+                startProc.running = true;
         }
 
         function restart(): void {
@@ -84,77 +72,152 @@ Scope {
         }
     }
 
-    // Check if daemon is already running
     Process {
-        id: checkProc
-        command: ["pgrep", "-f", "protocol-7.*main.py"]
-        running: false
-        stdout: StdioCollector {
-            onStreamFinished: {
-                // If output is empty, nothing running — start it
-                if (text.trim() === "") startProc.running = true;
+        id: writeConfig
+
+        // Keep arbitrary API keys/prompts out of shell quoting. The helper gets
+        // the patch as argv and atomically replaces config.json.
+        command: ["python3", root.configBridgeScript, root.configPath, root.patchJson]
+
+        stderr: SplitParser {
+            onRead: data => {
+                if (data.trim() !== "")
+                    console.warn("Protocol7 config bridge:", data.trim());
+            }
+        }
+
+        onExited: (code, status) => {
+            if (code !== 0)
+                return;
+
+            if (root.writeQueued) {
+                root.writeQueued = false;
+                Qt.callLater(() => writeConfig.running = true);
+                return;
+            }
+
+            // Kill a backend inherited from a previous shell generation once so
+            // the authoritative backend is always this Process object's child.
+            // Its stdout then remains attached to ProtocolState.
+            if (root.initialBackendAttach) {
+                root.initialBackendAttach = false;
+                root.restartRequested = false;
+                daemonManager.restart();
+            } else if (root.restartRequested) {
+                root.restartRequested = false;
+                daemonManager.restart();
+            } else {
+                daemonManager.ensureRunning();
             }
         }
     }
 
-    // Start the daemon
     Process {
         id: startProc
+
         command: [root.venvPython, root.daemonScript]
-        running: false
-        // Don't wait for it — it runs forever in the background
+
+        stdout: SplitParser {
+            splitMarker: "\n"
+            onRead: data => P7.ProtocolState.applyMessage(data)
+        }
+
+        stderr: SplitParser {
+            splitMarker: "\n"
+            onRead: data => {
+                if (data.trim() !== "")
+                    console.warn("Protocol7 backend:", data.trim());
+            }
+        }
+
+        onExited: P7.ProtocolState.reset()
     }
 
-    // Stop the daemon (e.g. plugin disabled)
     Process {
         id: stopProc
+
         command: ["pkill", "-f", "protocol-7.*main.py"]
-        running: false
-        onExited: _ => {
-            // After a brief pause let the process die, then restart
-            restartTimer.start();
-        }
+        onExited: restartTimer.start()
     }
 
     Timer {
         id: restartTimer
-        interval: 800
+
+        interval: 350
         repeat: false
-        onTriggered: {
-            applySettings();
-        }
+        onTriggered: daemonManager.ensureRunning()
     }
 
-    // ── React to settings changes ─────────────────────────────────────────
-    onSettingsChanged: applySettings()
+    onSettingsChanged: applySettings(false)
 
     Connections {
         target: settings
         enabled: settings !== null
-        function onUseGroqChanged(): void              { root.applySettings(); }
-        function onGroqApiKeyChanged(): void           { root.applySettings(); }
-        function onGroqModelChanged(): void            { root.applySettings(); }
-        function onModelSizeChanged(): void            { root.applySettings(); }
-        function onAutoDetectLanguageChanged(): void   { root.applySettings(); }
-        function onLanguageChanged(): void             { root.applySettings(); }
-        function onTranslateChanged(): void            { root.applySettings(); }
-        function onEnableLlmRewriteChanged(): void     { root.applySettings(); }
-        function onLlmBackendChanged(): void           { root.applySettings(); }
-        function onLlamaRepoChanged(): void            { root.applySettings(); }
-        function onLlamaFilenameChanged(): void        { root.applySettings(); }
-        function onOllamaEndpointChanged(): void       { root.applySettings(); }
-        function onOllamaModelChanged(): void          { root.applySettings(); }
-        function onLlmSystemPromptChanged(): void      { root.applySettings(); }
-        function onInputDeviceChanged(): void          { root.applySettings(); }
-        function onAccentColorChanged(): void          { root.applySettings(); }
-        function onUseCaelestiaColorsChanged(): void   { root.applySettings(); }
-        function onAutostartChanged(): void            { root.applySettings(); }
+
+        function onUseGroqChanged(): void {
+            root.applySettings(true);
+        }
+        function onGroqApiKeyChanged(): void {
+            root.applySettings(true);
+        }
+        function onGroqModelChanged(): void {
+            root.applySettings(true);
+        }
+        function onModelSizeChanged(): void {
+            root.applySettings(true);
+        }
+        function onAutoDetectLanguageChanged(): void {
+            root.applySettings(true);
+        }
+        function onLanguageChanged(): void {
+            root.applySettings(true);
+        }
+        function onTranslateChanged(): void {
+            root.applySettings(true);
+        }
+        function onEnableLlmRewriteChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlmBackendChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlamaRepoChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlamaFilenameChanged(): void {
+            root.applySettings(true);
+        }
+        function onOllamaEndpointChanged(): void {
+            root.applySettings(true);
+        }
+        function onOllamaModelChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlmSystemPromptChanged(): void {
+            root.applySettings(true);
+        }
+        function onInputDeviceChanged(): void {
+            root.applySettings(true);
+        }
+        function onAccentColorChanged(): void {
+            root.applySettings(false);
+        }
+        function onUseCaelestiaColorsChanged(): void {
+            root.applySettings(false);
+        }
+        function onAutostartChanged(): void {
+            root.applySettings(false);
+        }
     }
 
-    Component.onCompleted: applySettings()
+    IpcHandler {
+        target: "protocol7"
 
-    // When the plugin is destroyed (user disables it), stop the daemon.
-    Component.onDestruction: {
-        stopProc.running = true;
+        function debug(): string {
+            return [`backendRunning=${startProc.running}`, `stateConnected=${P7.ProtocolState.backendConnected}`, `visible=${P7.ProtocolState.visible}`, `processing=${P7.ProtocolState.processing}`, `level=${P7.ProtocolState.level}`].join("\n");
+        }
     }
+
+    Component.onCompleted: applySettings(false)
+    Component.onDestruction: stopProc.running = true
 }
