@@ -8,7 +8,7 @@
   "entryPoints": [
     {
       "type": "custom",
-      "source": "Main.qml"
+      "source": "entry/Main.qml"
     }
   ],
   "settings": "Settings.qml"
