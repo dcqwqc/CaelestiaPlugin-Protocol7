@@ -6,9 +6,7 @@ from datetime import datetime
 from config import load_config
 from hotkey_linux import HotkeyListener
 from audio import AudioRecorder
-from whisper_engine import WhisperEngine
 from native_bridge import NativeUIBridge
-from llm_rewriter import LLMRewriter
 
 
 def log_debug(msg):
@@ -66,9 +64,17 @@ class Protocol7App:
     def __init__(self):
         self.config = load_config()
         self.audio_recorder = AudioRecorder(device_id=self.config.get("input_device"))
+
+        # Publish an idle native-UI state before importing the heavy inference
+        # stacks. This lets Caelestia attach immediately after login/reload while
+        # Whisper/LLM modules continue initialising behind it.
+        self.ui_manager = NativeUIBridge(self.config, self.audio_recorder)
+
+        from whisper_engine import WhisperEngine
+        from llm_rewriter import LLMRewriter
+
         self.whisper_engine = WhisperEngine(self.config)
         self.llm_rewriter = LLMRewriter(self.config)
-        self.ui_manager = NativeUIBridge(self.config, self.audio_recorder)
         self.tray = TrayIcon(self)
 
         # Preserve the existing decoupled wtype helper, but do not give it any
