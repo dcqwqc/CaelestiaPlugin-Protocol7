@@ -110,7 +110,7 @@ class OverlaySurface(Gtk.DrawingArea):
         self.set_content_height(WINDOW_H)
         self.set_draw_func(self.on_draw)
 
-        self.bars = [0.0] * 13
+        self.bars = [0.0] * 9
         self.is_processing = False
         self.wave_offset = 0.0
 
@@ -268,14 +268,14 @@ class OverlaySurface(Gtk.DrawingArea):
         x_left = (width - inner_w) * 0.5 + dx
         mid_y = baseline - PANEL_H * 0.5
         bar_slot = inner_w / len(self.bars)
-        thickness = 1.8   # Finer, more elegant lines
-        max_h = PANEL_H - 10
+        thickness = 4.0
+        max_h = PANEL_H - 12
 
-        cr.set_source_rgba(r, g, b, 0.9)
+        cr.set_source_rgba(r, g, b, 0.85)
         cr.set_line_width(thickness)
         cr.set_line_cap(cairo.LineCap.ROUND)
         for i, val in enumerate(self.bars):
-            bar_h = min(max_h, max(thickness * 1.5, val * max_h))
+            bar_h = min(max_h, max(thickness, val * max_h))
             x = x_left + i * bar_slot + bar_slot * 0.5
             cr.move_to(x, mid_y - bar_h * 0.5)
             cr.line_to(x, mid_y + bar_h * 0.5)

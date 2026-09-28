@@ -37,9 +37,20 @@ Scope {
             groq_api_key: s.groqApiKey,
             groq_model: s.groqModel,
             model_size: s.modelSize,
-            enable_llm_rewrite: s.enableLlmRewrite,
             auto_detect_language: s.autoDetectLanguage,
+            language: s.language,
+            translate: s.translate,
+            enable_llm_rewrite: s.enableLlmRewrite,
+            llm_backend: s.llmBackend,
+            llama_repo: s.llamaRepo,
+            llama_filename: s.llamaFilename,
+            ollama_endpoint: s.ollamaEndpoint,
+            ollama_model: s.ollamaModel,
+            llm_system_prompt: s.llmSystemPrompt,
             input_device: s.inputDevice === -1 ? null : s.inputDevice,
+            accent_color: s.accentColor,
+            use_caelestia_colors: s.useCaelestiaColors,
+            autostart: s.autostart,
             // Tell main.py not to start the tray — Caelestia is the shell
             show_tray: false
         });
@@ -120,13 +131,24 @@ Scope {
     Connections {
         target: settings
         enabled: settings !== null
-        function onUseGroqChanged(): void       { root.applySettings(); }
-        function onGroqApiKeyChanged(): void    { root.applySettings(); }
-        function onGroqModelChanged(): void     { root.applySettings(); }
-        function onModelSizeChanged(): void     { root.applySettings(); }
-        function onEnableLlmRewriteChanged(): void { root.applySettings(); }
-        function onAutoDetectLanguageChanged(): void { root.applySettings(); }
-        function onInputDeviceChanged(): void   { root.applySettings(); }
+        function onUseGroqChanged(): void              { root.applySettings(); }
+        function onGroqApiKeyChanged(): void           { root.applySettings(); }
+        function onGroqModelChanged(): void            { root.applySettings(); }
+        function onModelSizeChanged(): void            { root.applySettings(); }
+        function onAutoDetectLanguageChanged(): void   { root.applySettings(); }
+        function onLanguageChanged(): void             { root.applySettings(); }
+        function onTranslateChanged(): void            { root.applySettings(); }
+        function onEnableLlmRewriteChanged(): void     { root.applySettings(); }
+        function onLlmBackendChanged(): void           { root.applySettings(); }
+        function onLlamaRepoChanged(): void            { root.applySettings(); }
+        function onLlamaFilenameChanged(): void        { root.applySettings(); }
+        function onOllamaEndpointChanged(): void       { root.applySettings(); }
+        function onOllamaModelChanged(): void          { root.applySettings(); }
+        function onLlmSystemPromptChanged(): void      { root.applySettings(); }
+        function onInputDeviceChanged(): void          { root.applySettings(); }
+        function onAccentColorChanged(): void          { root.applySettings(); }
+        function onUseCaelestiaColorsChanged(): void   { root.applySettings(); }
+        function onAutostartChanged(): void            { root.applySettings(); }
     }
 
     Component.onCompleted: applySettings()
