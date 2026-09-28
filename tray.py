@@ -11,18 +11,45 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MAIN_PY = os.path.join(APP_DIR, "main.py")
 
 def create_image():
-    # High quality, minimalistic, subtle and slightly grey tray icon
-    rgb = (100, 100, 100)  # Slightly grey
+    # Sleek, modern, dark microphone icon — thin lines, chip aesthetic
     scale = 4
-    image = Image.new('RGBA', (64 * scale, 64 * scale), color=(0, 0, 0, 0))
+    size = 64 * scale
+    fg = (220, 220, 220)   # Near-white strokes
+    bg = (18, 18, 18, 255) # Near-black background
+    image = Image.new('RGBA', (size, size), color=(0, 0, 0, 0))
     d = ImageDraw.Draw(image)
-    
-    d.ellipse((20*scale, 10*scale, 44*scale, 38*scale), fill=rgb)
-    d.rectangle((30*scale, 48*scale, 34*scale, 58*scale), fill=rgb)
-    d.rectangle((20*scale, 56*scale, 44*scale, 60*scale), fill=rgb)
-    d.arc((14*scale, 20*scale, 50*scale, 48*scale), start=0, end=180, fill=rgb, width=4*scale)
-    
-    # Downscale for high quality anti-aliasing
+
+    lw = max(1, 2 * scale)   # thin stroke
+
+    # Mic capsule outline (no fill — outline only)
+    cx = size // 2
+    cap_w = 14 * scale
+    cap_top = 8 * scale
+    cap_bot = 34 * scale
+    d.rounded_rectangle(
+        (cx - cap_w, cap_top, cx + cap_w, cap_bot),
+        radius=cap_w,
+        outline=fg, width=lw
+    )
+
+    # Bracket (arc) — thin U shape
+    bx0 = cx - 18 * scale
+    bx1 = cx + 18 * scale
+    by0 = 22 * scale
+    by1 = 44 * scale
+    d.arc((bx0, by0, bx1, by1), start=0, end=180, fill=fg, width=lw)
+
+    # Stem
+    stem_x0 = cx - lw // 2
+    stem_x1 = cx + lw // 2
+    d.rectangle((stem_x0, 44 * scale, stem_x1, 54 * scale), fill=fg)
+
+    # Base bar
+    base_w = 14 * scale
+    base_h = lw
+    d.rectangle((cx - base_w, 54 * scale, cx + base_w, 54 * scale + base_h), fill=fg)
+
+    # Downscale for crisp anti-aliasing
     return image.resize((64, 64), getattr(Image, 'Resampling', Image).LANCZOS)
 
 def on_settings(icon, item):
