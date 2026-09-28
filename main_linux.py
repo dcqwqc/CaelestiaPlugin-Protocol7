@@ -120,13 +120,13 @@ class Protocol7App:
             self.is_active = True
             self.cancel_requested = False
             self.audio_recorder.start_recording()
-            self._start_live_preview()
+            # self._start_live_preview() # User requested to remove live preview text box
             
             # Show UI on main thread safely
             import gi
             gi.require_version('GLib', '2.0')
             from gi.repository import GLib
-            # GLib.idle_add(self.ui_manager.show) # User requested to remove the overlay
+            GLib.idle_add(self.ui_manager.show)
         else:
             # Stop dictation
             log_debug("Dictation stopped")
