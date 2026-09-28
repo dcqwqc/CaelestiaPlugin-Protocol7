@@ -117,10 +117,10 @@ SettingsObject {
         inputType: SettingMeta.TextField
     }
 
-    property string llmSystemPrompt: "You are an expert Speech-to-Text (STT) editor. Your sole task is to process raw voice transcripts and output the speaker's final, intended message in clean, readable text.\n\n### Core Directives:\n1. Eliminate Disfluencies: Remove all filler words (um, uh, ah, like, you know) and stutters.\n2. Apply Self-Corrections: When the speaker changes their mind (using phrases like \"I mean,\" \"actually,\" \"no wait\"), apply their final intent.\n3. Fix Phonetic Typos: Correct obvious transcription errors based on context.\n4. Add Mechanics: Apply proper capitalization and punctuation.\n5. Preserve Meaning: Do not summarize, paraphrase, or change the user's intended tone.\n6. Absolute Constraint: Output ONLY the final cleaned text."
+    property string llmSystemPrompt: "You are an STT editor. Remove filler words (um, uh, like), fix stutters, apply self-corrections, fix typos, add punctuation. Output ONLY the cleaned text, no explanations."
     SettingMeta on llmSystemPrompt {
-        label: "LLM system prompt"
-        description: "The instruction given to the LLM that cleans up the raw transcript."
+        label: "LLM cleanup prompt"
+        description: "Instruction given to the LLM that cleans up the raw transcript. Keep it concise — this is a single-line field."
         icon: "psychology"
         inputType: SettingMeta.TextField
     }
