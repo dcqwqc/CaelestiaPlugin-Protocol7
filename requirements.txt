@@ -11,3 +11,5 @@ customtkinter; sys_platform == 'win32'
 pillow; sys_platform == 'win32'
 psutil
 llama-cpp-python
+groq
+soundfile

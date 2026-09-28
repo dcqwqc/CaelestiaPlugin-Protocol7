@@ -97,8 +97,9 @@ class Protocol7App:
                     if clean_text != text:
                         log_debug(f"Rewritten to: {clean_text}")
                     
-                    self.ui_manager.invoke_main_thread(self.ui_manager.hide)
-                    time.sleep(0.4) # Wait 400ms to ensure the user has physically released the keys
+                    # Wait 400ms to ensure the user has physically released the keys before pasting.
+                    # The UI stays in the 'processing' state during this time so the user knows it's not done yet.
+                    time.sleep(0.4)
                     
                     if clean_text.strip():
                         from config import add_history

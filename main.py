@@ -1,3 +1,14 @@
+import builtins
+import datetime as _dt_module
+
+_original_print = builtins.print
+
+def _timestamped_print(*args, **kwargs):
+    stamp = _dt_module.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _original_print(f"[{stamp}]", *args, **kwargs)
+
+builtins.print = _timestamped_print
+
 import sys
 import os
 

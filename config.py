@@ -15,7 +15,10 @@ DEFAULT_CONFIG = {
     "use_caelestia_colors": False,
     "input_device": None,
     "hotkey_keycode": 29,  # KEY_LEFTCTRL
-    "theme_mode": "system" # system, dark, light
+    "theme_mode": "system", # system, dark, light
+    "use_groq": False,
+    "groq_api_key": "",
+    "groq_model": "whisper-large-v3-turbo"
 }
 
 def load_config():

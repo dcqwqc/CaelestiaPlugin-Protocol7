@@ -11,15 +11,19 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 MAIN_PY = os.path.join(APP_DIR, "main.py")
 
 def create_image():
-    # Fully black tray icon as requested
-    rgb = (0, 0, 0)
-    image = Image.new('RGBA', (64, 64), color = (0, 0, 0, 0))
+    # High quality, minimalistic, subtle and slightly grey tray icon
+    rgb = (100, 100, 100)  # Slightly grey
+    scale = 4
+    image = Image.new('RGBA', (64 * scale, 64 * scale), color=(0, 0, 0, 0))
     d = ImageDraw.Draw(image)
-    d.ellipse((20, 10, 44, 38), fill=rgb)
-    d.rectangle((30, 48, 34, 58), fill=rgb)
-    d.rectangle((20, 56, 44, 60), fill=rgb)
-    d.arc((14, 20, 50, 48), start=0, end=180, fill=rgb, width=4)
-    return image
+    
+    d.ellipse((20*scale, 10*scale, 44*scale, 38*scale), fill=rgb)
+    d.rectangle((30*scale, 48*scale, 34*scale, 58*scale), fill=rgb)
+    d.rectangle((20*scale, 56*scale, 44*scale, 60*scale), fill=rgb)
+    d.arc((14*scale, 20*scale, 50*scale, 48*scale), start=0, end=180, fill=rgb, width=4*scale)
+    
+    # Downscale for high quality anti-aliasing
+    return image.resize((64, 64), getattr(Image, 'Resampling', Image).LANCZOS)
 
 def on_settings(icon, item):
     subprocess.Popen([sys.executable, MAIN_PY, "--settings"], cwd=APP_DIR)
@@ -136,6 +140,25 @@ def build_menu():
         pystray.MenuItem('Quit', on_quit)
     )
 
+def check_history_updates(icon):
+    from config import CONFIG_DIR
+    history_file = os.path.join(CONFIG_DIR, "history.json")
+    last_mtime = 0
+    while True:
+        try:
+            if os.path.exists(history_file):
+                mtime = os.path.getmtime(history_file)
+                if mtime > last_mtime:
+                    if last_mtime != 0: # don't rebuild immediately on first loop
+                        icon.menu = build_menu()
+                        icon.update_menu()
+                    last_mtime = mtime
+        except Exception:
+            pass
+        time.sleep(1)
+
 if __name__ == "__main__":
     icon = pystray.Icon("Protocol7", create_image(), "Protocol-7", build_menu())
+    import threading
+    threading.Thread(target=check_history_updates, args=(icon,), daemon=True).start()
     icon.run()

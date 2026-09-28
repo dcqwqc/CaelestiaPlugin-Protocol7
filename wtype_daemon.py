@@ -11,18 +11,35 @@ with os.fdopen(fd, 'r') as f:
     for line in f:
         if line.strip() == "QUIT_DAEMON":
             break
-        # Strip the delimiter: it marks the end of an utterance, and typing it
-        # would press Enter into whatever has focus.
-        #
-        # Do not keep `wtype -` alive and write to its stdin. wtype consumes
-        # stdin until EOF before injecting the text, so a long-lived process
-        # buffers every dictation indefinitely. Giving each completed FIFO
-        # record its own wtype invocation supplies EOF at the end of the
-        # utterance and makes the virtual-keyboard events reach the focused
-        # application immediately.
+        # Strip the delimiter: it marks the end of an utterance
         text = line.rstrip("\r\n")
         if text:
             try:
-                subprocess.run(["wtype", text], check=True)
+                # Dynamic pasting speed
+                if len(text) < 50:
+                    # Small text: type it medium fast (wtype default)
+                    subprocess.run(["wtype", text], check=True)
+                else:
+                    # Large text: paste via clipboard for instant speed
+                    # Backup old clipboard safely
+                    old_clip = b""
+                    try:
+                        old_clip = subprocess.check_output(["wl-paste", "--no-newline"], stderr=subprocess.DEVNULL)
+                    except:
+                        pass
+                    
+                    # Set new clipboard
+                    subprocess.run(["wl-copy"], input=text.encode('utf-8'), check=True)
+                    # Small delay to let compositor register clipboard
+                    time.sleep(0.05)
+                    # Send Ctrl+V
+                    subprocess.run(["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"], check=True)
+                    
+                    # Restore old clipboard (optional, but polite)
+                    time.sleep(0.1)
+                    if old_clip:
+                        subprocess.run(["wl-copy"], input=old_clip)
+                    else:
+                        subprocess.run(["wl-copy", "-c"]) # clear
             except (OSError, subprocess.CalledProcessError) as error:
                 print(f"Protocol7: wtype failed: {error}", flush=True)

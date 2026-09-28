@@ -74,8 +74,41 @@ class SettingsWindow(Gtk.ApplicationWindow):
         self.recording_hotkey = False
         self.current_keycode = self.config.get("hotkey_keycode", 29)
 
+        # -- Groq API Configuration --
+        self.add_section_title(vbox, "Groq Cloud API (Whisper)")
+        
+        # Recommendation
+        groq_info = Gtk.Label(label="Creating a Groq API Key is recommended and free! Get one at console.groq.com.")
+        groq_info.set_wrap(True)
+        vbox.append(groq_info)
+        
+        groq_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.use_groq_check = Gtk.CheckButton(label="Use Groq API for Whisper")
+        self.use_groq_check.set_active(self.config.get("use_groq", False))
+        groq_box.append(self.use_groq_check)
+        vbox.append(groq_box)
+
+        self.groq_api_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.groq_api_entry = Gtk.Entry()
+        self.groq_api_entry.set_placeholder_text("gsk_...")
+        self.groq_api_entry.set_text(self.config.get("groq_api_key", ""))
+        self.groq_api_entry.set_visibility(False)
+        self.groq_api_box.append(Gtk.Label(label="Groq API Key:"))
+        self.groq_api_box.append(self.groq_api_entry)
+        vbox.append(self.groq_api_box)
+        
+        self.groq_model_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.groq_models = ["whisper-large-v3-turbo", "whisper-large-v3"]
+        self.groq_model_combo = Gtk.DropDown.new_from_strings(self.groq_models)
+        active_groq = self.config.get("groq_model", "whisper-large-v3-turbo")
+        if active_groq in self.groq_models:
+            self.groq_model_combo.set_selected(self.groq_models.index(active_groq))
+        self.groq_model_box.append(Gtk.Label(label="Groq Model:"))
+        self.groq_model_box.append(self.groq_model_combo)
+        vbox.append(self.groq_model_box)
+
         # -- Model Library --
-        self.add_section_title(vbox, "AI Models & Speed (Whisper)")
+        self.add_section_title(vbox, "Local AI Models & Speed (Whisper)")
         
         whisper_type_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         self.whisper_type_combo = Gtk.DropDown.new_from_strings(["Downloaded Models", "New Download (Custom HF Repo)"])
@@ -123,6 +156,17 @@ class SettingsWindow(Gtk.ApplicationWindow):
                     break
                     
         on_whisper_type_changed(self.whisper_type_combo, None)
+
+        def on_use_groq_toggled(check):
+            is_active = check.get_active()
+            self.groq_api_box.set_visible(is_active)
+            self.groq_model_box.set_visible(is_active)
+            self.whisper_type_combo.set_sensitive(not is_active)
+            self.whisper_builtin_box.set_sensitive(not is_active)
+            self.whisper_custom_box.set_sensitive(not is_active)
+
+        self.use_groq_check.connect("toggled", on_use_groq_toggled)
+        on_use_groq_toggled(self.use_groq_check)
         
         # -- Hotkey Configuration --
         self.add_section_title(vbox, "Hotkey Configuration")
@@ -564,6 +608,10 @@ Output: The dog barked loudly at the mailman."""
         return False
 
     def on_save_clicked(self, btn):
+        self.config["use_groq"] = self.use_groq_check.get_active()
+        self.config["groq_api_key"] = self.groq_api_entry.get_text()
+        self.config["groq_model"] = self.groq_models[self.groq_model_combo.get_selected()]
+
         buf = self.prompt_textview.get_buffer()
         start, end = buf.get_bounds()
         self.config["llm_system_prompt"] = buf.get_text(start, end, True)

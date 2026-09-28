@@ -1,7 +1,7 @@
 import sys
 import os
 
-APP_DIR = r"C:\Users\LeviZ\protocol-7"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(APP_DIR)
 
 from tray import create_image
