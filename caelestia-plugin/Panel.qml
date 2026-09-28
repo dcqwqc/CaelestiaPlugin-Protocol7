@@ -41,16 +41,12 @@ Item {
                 readonly property real distance: Math.abs(index - 4) / 4
                 readonly property real voiceWeight: Math.max(0.34, 1 - distance * 0.66)
                 readonly property real wave: 0.22 + 0.62 * ((Math.sin(root.phase + index * 0.56) + 1) / 2)
-                readonly property real amount: P7.ProtocolState.processing
-                    ? wave
-                    : Math.max(0.12, P7.ProtocolState.level * voiceWeight)
+                readonly property real amount: P7.ProtocolState.processing ? wave : Math.max(0.12, P7.ProtocolState.level * voiceWeight)
 
                 width: 4
                 height: 4 + amount * 16
                 radius: 2
-                color: root.settings?.useCaelestiaColors !== false
-                    ? Colours.palette.m3primary
-                    : (root.settings?.accentColor ?? "#B57EDC")
+                color: root.settings?.useCaelestiaColors !== false ? Colours.palette.m3primary : (root.settings?.accentColor ?? "#B57EDC")
                 opacity: 0.88
 
                 Behavior on height {

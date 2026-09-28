@@ -77,12 +77,7 @@ Scope {
 
         // Keep arbitrary API keys/prompts out of shell quoting. The helper gets
         // the patch as argv and atomically replaces config.json.
-        command: [
-            "python3",
-            root.configBridgeScript,
-            root.configPath,
-            root.patchJson
-        ]
+        command: ["python3", root.configBridgeScript, root.configPath, root.patchJson]
 
         stderr: SplitParser {
             onRead: data => {
@@ -159,37 +154,67 @@ Scope {
         target: settings
         enabled: settings !== null
 
-        function onUseGroqChanged(): void { root.applySettings(true); }
-        function onGroqApiKeyChanged(): void { root.applySettings(true); }
-        function onGroqModelChanged(): void { root.applySettings(true); }
-        function onModelSizeChanged(): void { root.applySettings(true); }
-        function onAutoDetectLanguageChanged(): void { root.applySettings(true); }
-        function onLanguageChanged(): void { root.applySettings(true); }
-        function onTranslateChanged(): void { root.applySettings(true); }
-        function onEnableLlmRewriteChanged(): void { root.applySettings(true); }
-        function onLlmBackendChanged(): void { root.applySettings(true); }
-        function onLlamaRepoChanged(): void { root.applySettings(true); }
-        function onLlamaFilenameChanged(): void { root.applySettings(true); }
-        function onOllamaEndpointChanged(): void { root.applySettings(true); }
-        function onOllamaModelChanged(): void { root.applySettings(true); }
-        function onLlmSystemPromptChanged(): void { root.applySettings(true); }
-        function onInputDeviceChanged(): void { root.applySettings(true); }
-        function onAccentColorChanged(): void { root.applySettings(false); }
-        function onUseCaelestiaColorsChanged(): void { root.applySettings(false); }
-        function onAutostartChanged(): void { root.applySettings(false); }
+        function onUseGroqChanged(): void {
+            root.applySettings(true);
+        }
+        function onGroqApiKeyChanged(): void {
+            root.applySettings(true);
+        }
+        function onGroqModelChanged(): void {
+            root.applySettings(true);
+        }
+        function onModelSizeChanged(): void {
+            root.applySettings(true);
+        }
+        function onAutoDetectLanguageChanged(): void {
+            root.applySettings(true);
+        }
+        function onLanguageChanged(): void {
+            root.applySettings(true);
+        }
+        function onTranslateChanged(): void {
+            root.applySettings(true);
+        }
+        function onEnableLlmRewriteChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlmBackendChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlamaRepoChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlamaFilenameChanged(): void {
+            root.applySettings(true);
+        }
+        function onOllamaEndpointChanged(): void {
+            root.applySettings(true);
+        }
+        function onOllamaModelChanged(): void {
+            root.applySettings(true);
+        }
+        function onLlmSystemPromptChanged(): void {
+            root.applySettings(true);
+        }
+        function onInputDeviceChanged(): void {
+            root.applySettings(true);
+        }
+        function onAccentColorChanged(): void {
+            root.applySettings(false);
+        }
+        function onUseCaelestiaColorsChanged(): void {
+            root.applySettings(false);
+        }
+        function onAutostartChanged(): void {
+            root.applySettings(false);
+        }
     }
 
     IpcHandler {
         target: "protocol7"
 
         function debug(): string {
-            return [
-                `backendRunning=${startProc.running}`,
-                `stateConnected=${P7.ProtocolState.backendConnected}`,
-                `visible=${P7.ProtocolState.visible}`,
-                `processing=${P7.ProtocolState.processing}`,
-                `level=${P7.ProtocolState.level}`
-            ].join("\n");
+            return [`backendRunning=${startProc.running}`, `stateConnected=${P7.ProtocolState.backendConnected}`, `visible=${P7.ProtocolState.visible}`, `processing=${P7.ProtocolState.processing}`, `level=${P7.ProtocolState.level}`].join("\n");
         }
     }
 
