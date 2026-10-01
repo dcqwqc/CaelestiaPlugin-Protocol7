@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import dcqwqc.protocol7.services as P7
+import qs.utils
 
 // Protocol7 backend controller. Visual presentation is a separate shell-panel
 // entry point rendered by Caelestia itself.
@@ -11,9 +12,11 @@ Scope {
     property var settings: null
 
     readonly property string configPath: `${Quickshell.env("HOME")}/.config/protocol-7/config.json`
-    readonly property string daemonScript: `${Quickshell.env("HOME")}/protocol-7/main.py`
-    readonly property string configBridgeScript: `${Quickshell.env("HOME")}/protocol-7/plugin_config_bridge.py`
-    readonly property string venvPython: `${Quickshell.env("HOME")}/protocol-7/venv/bin/python`
+    readonly property string daemonScript: Paths.toLocalFile(Qt.resolvedUrl("../main.py"))
+    readonly property string configBridgeScript: Paths.toLocalFile(Qt.resolvedUrl("../plugin_config_bridge.py"))
+    readonly property string venvPython: `${Paths.data}/plugin-runtime/protocol7/venv/bin/python`
+    readonly property string bootstrapScript: Paths.toLocalFile(Qt.resolvedUrl("../scripts/plugin-bootstrap"))
+    property bool backendReady: false
 
     property bool writeQueued: false
     property bool restartRequested: false
@@ -54,7 +57,7 @@ Scope {
     }
 
     function applySettings(restartDaemon: bool): void {
-        if (!settings)
+        if (!settings || !backendReady)
             return;
 
         restartRequested = restartRequested || restartDaemon;
@@ -75,6 +78,20 @@ Scope {
 
         function restart(): void {
             stopProc.running = true;
+        }
+    }
+
+    Process {
+        id: bootstrap
+        command: [root.bootstrapScript]
+        running: false
+        onExited: code => {
+            if (code === 0) {
+                root.backendReady = true;
+                root.applySettings(false);
+            } else {
+                console.warn("Protocol7 bootstrap failed with code", code);
+            }
         }
     }
 
@@ -163,7 +180,7 @@ Scope {
         onTriggered: daemonManager.ensureRunning()
     }
 
-    onSettingsChanged: applySettings(false)
+    onSettingsChanged: { if (backendReady) applySettings(false); }
 
     Connections {
         target: settings
@@ -213,7 +230,7 @@ Scope {
 
     }
 
-    Component.onCompleted: applySettings(false)
+    Component.onCompleted: bootstrap.running = true
 
     Component.onDestruction: stopProc.running = true
 }

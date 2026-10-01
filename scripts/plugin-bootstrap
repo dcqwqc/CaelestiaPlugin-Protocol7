@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runtime="${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/plugin-runtime/protocol7"
+mkdir -p "$runtime"
+venv="$runtime/venv"
+stamp="$venv/.protocol7-requirements.sha256"
+requirements="$root/requirements.txt"
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
+if [[ ! -x $venv/bin/python ]]; then
+    python3 -m venv --system-site-packages "$venv"
+fi
+hash=$(sha256sum "$requirements" | awk '{print $1}')
+old=$(cat "$stamp" 2>/dev/null || true)
+if [[ $hash != "$old" ]]; then
+    "$venv/bin/python" -m pip install --disable-pip-version-check -r "$requirements"
+    printf '%s\n' "$hash" > "$stamp"
+fi

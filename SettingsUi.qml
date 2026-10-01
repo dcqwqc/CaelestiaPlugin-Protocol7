@@ -10,6 +10,7 @@ import qs.components
 import qs.components.controls
 import qs.modules.nexus.common
 import qs.services
+import qs.utils
 
 ColumnLayout {
     id: root
@@ -18,7 +19,7 @@ ColumnLayout {
     spacing: Tokens.spacing.extraSmall / 2
     Layout.fillWidth: true
 
-    readonly property string home: Quickshell.env("HOME")
+    readonly property string pluginRoot: Paths.toLocalFile(Qt.resolvedUrl("."))
 
     property var modelChoices: [
         { label: "tiny.en — fastest, English", value: "tiny.en" },
@@ -319,7 +320,7 @@ ColumnLayout {
 
     Process {
         id: hotkeyCapture
-        command: [root.home + "/protocol-7/venv/bin/python", root.home + "/protocol-7/hotkey_capture.py"]
+        command: [`${Paths.data}/plugin-runtime/protocol7/venv/bin/python`, root.pluginRoot + "/hotkey_capture.py"]
         running: false
 
         stdout: StdioCollector {
