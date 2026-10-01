@@ -19,7 +19,7 @@ Protocol-7 is a standalone desktop application that provides blazing-fast, offli
 
 1. Clone the repository:
    ```powershell
-   git clone https://github.com/dcqwqc/protocol-7.git
+   git clone https://github.com/dcqwqc/CaelestiaPlugin-Protocol7.git
    cd protocol-7
    ```
 2. Install requirements:
@@ -37,7 +37,7 @@ Protocol-7 is a standalone desktop application that provides blazing-fast, offli
 1. Ensure you have the required dependencies: `python3`, `wtype`, `gtk4`, and `gtk4-layer-shell`.
 2. Clone and run the universal install script (Debian/Ubuntu, Arch, Fedora):
    ```bash
-   git clone https://github.com/dcqwqc/protocol-7.git
+   git clone https://github.com/dcqwqc/CaelestiaPlugin-Protocol7.git
    cd protocol-7
    ./install.sh
    ```

@@ -2,7 +2,7 @@
   "name": "Protocol7",
   "version": "1.0.0",
   "author": "dcqwqc",
-  "homepage": "https://github.com/dcqwqc/protocol-7",
+  "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-Protocol7",
   "icon": "mic",
   "description": "Hotkey-triggered voice dictation powered by Whisper (local or Groq cloud). Hold your hotkey, speak, and text is typed instantly anywhere.",
   "entryPoints": [
