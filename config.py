@@ -14,11 +14,20 @@ DEFAULT_CONFIG = {
     "accent_color": "#B57EDC",  # Lavender purple
     "use_caelestia_colors": False,
     "input_device": None,
-    "hotkey_keycode": 29,  # KEY_LEFTCTRL
+    "hotkey_keycode": [29, 29],  # Double KEY_LEFTCTRL
+    "hotkey_name": "Double Control_L",
     "theme_mode": "system", # system, dark, light
     "use_groq": False,
     "groq_api_key": "",
-    "groq_model": "whisper-large-v3-turbo"
+    "groq_model": "whisper-large-v3-turbo",
+    "enable_llm_rewrite": False,
+    "llm_backend": "Built-in (Llama.cpp)",
+    "llama_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+    "llama_filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "ollama_endpoint": "http://127.0.0.1:11434",
+    "ollama_model": "llama3.2",
+    "llm_system_prompt": "You are an STT editor. Remove filler words, fix stutters and self-corrections, correct obvious transcription errors, and add punctuation. Output only the cleaned text.",
+    "show_tray": True
 }
 
 def load_config():

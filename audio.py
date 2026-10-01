@@ -33,10 +33,19 @@ class AudioRecorder:
             self.audio_queue.put(chunk)
             with self._chunks_lock:
                 self._recording_chunks.append(chunk)
-            # Calculate volume level for visualizer (RMS)
-            rms = np.sqrt(np.mean(mono_data**2))
-            # Normalize and smooth slightly
-            self.volume_level = min(1.0, rms * 10)  # arbitrary scaling for visualization
+            # Perceptual voice meter for the Caelestia visualizer. A linear
+            # `rms * 10` barely moves for normal speech and then jumps near loud
+            # peaks. Mapping dBFS into 0..1 gives useful motion across whispers,
+            # normal speech and loud syllables. Fast attack keeps consonants
+            # snappy; gentler release avoids flicker between syllables.
+            rms = float(np.sqrt(np.mean(mono_data**2)))
+            peak = float(np.max(np.abs(mono_data))) if mono_data.size else 0.0
+            dbfs = 20.0 * np.log10(max(rms, 1e-7))
+            rms_level = float(np.clip((dbfs + 52.0) / 38.0, 0.0, 1.0))
+            peak_level = float(np.clip((peak - 0.008) / 0.22, 0.0, 1.0))
+            target = max(rms_level, peak_level * 0.82)
+            alpha = 0.78 if target >= self.volume_level else 0.34
+            self.volume_level += (target - self.volume_level) * alpha
 
     def start_recording(self):
         self.is_recording = True
