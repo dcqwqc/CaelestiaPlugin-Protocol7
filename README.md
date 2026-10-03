@@ -9,6 +9,12 @@ Protocol-7 is a standalone desktop application that provides blazing-fast, offli
 ## Features
 - **Cross-Platform Native**: Runs flawlessly on both Windows 10/11 and Linux (Wayland).
 - **Global Hotkey**: Double-tap `Ctrl` to trigger dictation globally from anywhere in your OS. 
+- **Direct local control**: Caelestia and trusted local integrations can start,
+  stop, toggle, or query dictation through the mode-0600
+  `$XDG_RUNTIME_DIR/protocol7-control.sock` endpoint. The Caelestia plugin also
+  exposes `protocol7.trigger`, `startDictation`, and `stopDictation` over
+  Quickshell IPC, so integrations do not need to synthesize the configured
+  keyboard hotkey.
 - **Auto-Paste**: Instantly pastes the transcribed text directly into your currently focused window (`pyautogui` on Windows, `wtype` on Wayland).
 - **Local AI Engine**: Powered by `faster-whisper` with automatic hardware acceleration (CUDA fallback to CPU).
 - **AI Grammar & Self-Correction**: Features a real-time LLM backend (Built-in LLaMA.cpp or remote Ollama Server) to correct grammar, fix phonetic typos, and apply vocal self-corrections on the fly.

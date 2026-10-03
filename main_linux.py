@@ -7,6 +7,7 @@ from config import load_config
 from hotkey_linux import HotkeyListener
 from audio import AudioRecorder
 from native_bridge import NativeUIBridge
+from control_ipc import ControlServer
 
 
 def log_debug(msg):
@@ -106,6 +107,8 @@ class Protocol7App:
         self.cancel_requested = False
         self._live_stop = threading.Event()
         self._live_thread = None
+        self._dictation_lock = threading.RLock()
+        self.control = ControlServer(self._handle_control_command)
 
         # KEY_LEFTCTRL = 29.
         self.hotkey = HotkeyListener(
@@ -113,32 +116,64 @@ class Protocol7App:
             self.on_hotkey_trigger,
         )
 
+    def _dictation_status(self):
+        return {
+            "ok": True,
+            "active": bool(self.is_active),
+            "processing": bool(self.is_processing),
+        }
+
+    def _toggle_dictation(self, source="hotkey"):
+        with self._dictation_lock:
+            log_debug(f"DICTATION TOGGLE source={source}")
+
+            if self.is_processing:
+                log_debug("Dictation cancelled during processing")
+                self.cancel_requested = True
+                self.is_processing = False
+                self.ui_manager.hide()
+                return self._dictation_status()
+
+            if not self.is_active:
+                log_debug("Dictation started")
+                self.is_active = True
+                self.cancel_requested = False
+                self.audio_recorder.start_recording()
+                self.ui_manager.show()
+                return self._dictation_status()
+
+            log_debug("Dictation stopped")
+            self.is_active = False
+            self._live_stop.set()
+            self.is_processing = True
+            self.ui_manager.set_processing_state()
+
+            # Transcription and LLM work stay off the trigger thread.
+            threading.Thread(target=self.process_audio, daemon=True).start()
+            return self._dictation_status()
+
+    def _handle_control_command(self, command):
+        if command == "status":
+            with self._dictation_lock:
+                return self._dictation_status()
+        if command == "toggle":
+            return self._toggle_dictation("control")
+        if command == "start":
+            with self._dictation_lock:
+                if not self.is_active and not self.is_processing:
+                    return self._toggle_dictation("control-start")
+                return self._dictation_status()
+        if command == "stop":
+            with self._dictation_lock:
+                if self.is_active:
+                    return self._toggle_dictation("control-stop")
+                if self.is_processing:
+                    return self._toggle_dictation("control-cancel")
+                return self._dictation_status()
+        return {"ok": False, "error": "unsupported command"}
+
     def on_hotkey_trigger(self):
-        log_debug("HOTKEY TRIGGERED")
-
-        if self.is_processing:
-            log_debug("Dictation cancelled during processing")
-            self.cancel_requested = True
-            self.is_processing = False
-            self.ui_manager.hide()
-            return
-
-        if not self.is_active:
-            log_debug("Dictation started")
-            self.is_active = True
-            self.cancel_requested = False
-            self.audio_recorder.start_recording()
-            self.ui_manager.show()
-            return
-
-        log_debug("Dictation stopped")
-        self.is_active = False
-        self._live_stop.set()
-        self.is_processing = True
-        self.ui_manager.set_processing_state()
-
-        # Transcription and LLM work stay off the hotkey thread.
-        threading.Thread(target=self.process_audio, daemon=True).start()
+        return self._toggle_dictation("hotkey")
 
     def _start_live_preview(self):
         self._live_stop.clear()
@@ -382,6 +417,7 @@ class Protocol7App:
             daemon=True,
         ).start()
 
+        self.control.start()
         self.hotkey.start()
         self.tray.start()
 
@@ -390,6 +426,7 @@ class Protocol7App:
         except KeyboardInterrupt:
             log_debug("Exiting...")
         finally:
+            self.control.stop()
             self.hotkey.stop()
             self.tray.stop()
             self.ui_manager.quit()

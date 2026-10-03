@@ -14,6 +14,7 @@ Scope {
     readonly property string configPath: `${Quickshell.env("HOME")}/.config/protocol-7/config.json`
     readonly property string daemonScript: Paths.toLocalFile(Qt.resolvedUrl("../main.py"))
     readonly property string configBridgeScript: Paths.toLocalFile(Qt.resolvedUrl("../plugin_config_bridge.py"))
+    readonly property string controlScript: Paths.toLocalFile(Qt.resolvedUrl("../control_ipc.py"))
     readonly property string venvPython: `${Paths.data}/plugin-runtime/protocol7/venv/bin/python`
     readonly property string bootstrapScript: Paths.toLocalFile(Qt.resolvedUrl("../scripts/plugin-bootstrap"))
     property bool backendReady: false
@@ -216,6 +217,25 @@ Scope {
     IpcHandler {
         target: "protocol7"
 
+        function trigger(): string {
+            daemonManager.ensureRunning();
+            triggerRetry.remaining = 12;
+            triggerRetry.start();
+            return "queued";
+        }
+
+        function startDictation(): string {
+            daemonManager.ensureRunning();
+            controlStart.running = true;
+            return "queued";
+        }
+
+        function stopDictation(): string {
+            daemonManager.ensureRunning();
+            controlStop.running = true;
+            return "queued";
+        }
+
         function debug(): string {
             return [
                 `backendRunning=${startProc.running}`,
@@ -228,6 +248,46 @@ Scope {
 ");
         }
 
+    }
+
+    Process {
+        id: controlToggle
+        command: [root.venvPython, root.controlScript, "toggle"]
+    }
+
+    Process {
+        id: controlStart
+        command: [root.venvPython, root.controlScript, "start"]
+    }
+
+    Process {
+        id: controlStop
+        command: [root.venvPython, root.controlScript, "stop"]
+    }
+
+    Timer {
+        id: triggerRetry
+        property int remaining: 0
+        interval: 80
+        repeat: true
+        onTriggered: {
+            if (controlToggle.running)
+                return;
+            if (remaining <= 0) {
+                stop();
+                return;
+            }
+            remaining -= 1;
+            controlToggle.running = true;
+        }
+    }
+
+    Connections {
+        target: controlToggle
+        function onExited(code: int): void {
+            if (code === 0)
+                triggerRetry.stop();
+        }
     }
 
     Component.onCompleted: bootstrap.running = true
