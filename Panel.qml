@@ -14,7 +14,12 @@ Item {
 
     readonly property bool panelVisible: P7.ProtocolState.visible
     readonly property bool panelInputEnabled: false
-    readonly property bool panelOverFullscreen: true
+    // When the tablet OSK is open, Panels.qml already lifts this bottom HUD
+    // above the keyboard via bottomInset. Elevating the entire fullscreen
+    // caelestia-drawers surface to Overlay in that state would cover wvkbd with
+    // the drawer's surface colour. Only request over-fullscreen elevation when
+    // there is no on-screen keyboard footprint.
+    readonly property bool panelOverFullscreen: Osk.inset <= 0
     readonly property bool panelLiftShadow: true
     readonly property real panelDeformAmount: 0.03
     readonly property int panelMotionDuration: 180
