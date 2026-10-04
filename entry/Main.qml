@@ -228,7 +228,6 @@ Scope {
         function onCompanionWakePhraseChanged(): void { root.applySettings(true); }
         function onCompanionWakeThresholdChanged(): void { root.applySettings(true); }
         function onCompanionWakeCooldownSecondsChanged(): void { root.applySettings(true); }
-        function onCompanionWakeModelChanged(): void { root.applySettings(true); }
         function onCompanionUrlChanged(): void { root.applySettings(true); }
         function onCompanionBrowserBridgeEnabledChanged(): void { root.applySettings(true); }
     }
