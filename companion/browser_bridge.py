@@ -50,6 +50,7 @@ class BrowserBridge:
         if not wtype:
             return False
         try:
+            subprocess.run([wtype, "-M", "ctrl", "l", "-m", "ctrl"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
             result = subprocess.run(
                 [wtype, "-M", "ctrl", "-M", "alt", "-M", "shift", "v",
                  "-m", "shift", "-m", "alt", "-m", "ctrl"],
