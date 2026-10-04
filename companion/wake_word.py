@@ -95,7 +95,7 @@ class WakeWordDetector:
         # Use the exact same shared WhisperEngine instance as Protocol 7
         # dictation. That means the wake path automatically follows the
         # configured backend/model (currently Groq + whisper-large-v3).
-        return str(self.transcriber.transcribe(audio, live=False) or "").strip()
+        return str(self.transcriber.transcribe(audio, live=False, allow_local_fallback=False) or "").strip()
 
     def _worker(self) -> None:
         active: list[np.ndarray] = []

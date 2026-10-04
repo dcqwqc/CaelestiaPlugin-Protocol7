@@ -47,7 +47,7 @@ class WhisperEngine:
             # local model instead of leaving self.model as None.
             self._load_local_model_locked()
 
-    def transcribe(self, audio_data, live=False):
+    def transcribe(self, audio_data, live=False, allow_local_fallback=True):
         # Reject audio less than 0.5 seconds (at 16000Hz, 0.5s = 8000 samples)
         if len(audio_data) < 8000:
             return ""
@@ -75,6 +75,9 @@ class WhisperEngine:
                 print(f"[Groq Whisper] Internal Transcription took {time.time() - t0:.2f}s")
                 return transcription.text.strip()
             except Exception as e:
+                if not allow_local_fallback:
+                    print(f"Groq API Error: {e}; local fallback disabled for this request.")
+                    return ""
                 print(f"Groq API Error: {e}; falling back to local Whisper.")
                 with self._lock:
                     self._load_local_model_locked()

@@ -29,8 +29,8 @@ class WakeWordTests(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
-            def transcribe(self, audio, live=False):
-                self.calls.append((len(audio), live))
+            def transcribe(self, audio, live=False, allow_local_fallback=True):
+                self.calls.append((len(audio), live, allow_local_fallback))
                 return "Hey Tabby"
 
         backend = FakeTranscriber()
@@ -41,7 +41,7 @@ class WakeWordTests(unittest.TestCase):
         )
         text = detector._transcribe(np.zeros(16000, dtype=np.float32))
         self.assertEqual(text, "Hey Tabby")
-        self.assertEqual(backend.calls, [(16000, False)])
+        self.assertEqual(backend.calls, [(16000, False, False)])
 
 
 class CommandValidationTests(unittest.TestCase):
