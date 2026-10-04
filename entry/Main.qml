@@ -59,7 +59,6 @@ Scope {
             companion_wake_threshold: settings.companionWakeThreshold / 100.0,
             companion_wake_cooldown_seconds: settings.companionWakeCooldownSeconds,
             companion_url: settings.companionUrl,
-            companion_browser_bridge_enabled: settings.companionBrowserBridgeEnabled,
             native_caelestia_ui: true
         });
     }
@@ -229,7 +228,6 @@ Scope {
         function onCompanionWakeThresholdChanged(): void { root.applySettings(true); }
         function onCompanionWakeCooldownSecondsChanged(): void { root.applySettings(true); }
         function onCompanionUrlChanged(): void { root.applySettings(true); }
-        function onCompanionBrowserBridgeEnabledChanged(): void { root.applySettings(true); }
     }
 
     IpcHandler {

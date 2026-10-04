@@ -8,7 +8,7 @@ import dcqwqc.protocol7.services as P7
 Item {
     id: root
     property real phase: 0
-    readonly property bool panelVisible: P7.CompanionState.enabled
+    readonly property bool panelVisible: P7.CompanionState.enabled && P7.CompanionState.summoned
     readonly property bool panelInputEnabled: false
     readonly property bool panelOverFullscreen: true
     readonly property bool panelLiftShadow: P7.CompanionState.whiteboardVisible

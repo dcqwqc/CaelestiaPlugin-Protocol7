@@ -139,17 +139,9 @@ SettingsObject {
     property string companionUrl: "https://chatgpt.com/"
     SettingMeta on companionUrl {
         label: "Companion ChatGPT URL"
-        description: "Dedicated ChatGPT conversation URL opened/focused after Hey Tabby."
+        description: "Dedicated ChatGPT conversation URL loaded inside Tabby’s hidden Voice runtime."
         icon: "link"
         inputType: SettingMeta.TextField
-    }
-
-    property bool companionBrowserBridgeEnabled: true
-    SettingMeta on companionBrowserBridgeEnabled {
-        label: "ChatGPT browser bridge"
-        description: "Focus/open the dedicated Zen ChatGPT surface after the wake word."
-        icon: "language"
-        inputType: SettingMeta.Switch
     }
 
     // Appearance / integration

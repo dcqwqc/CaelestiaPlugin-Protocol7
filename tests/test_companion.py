@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from companion.ipc import CompanionIPCServer, send_command, socket_path
-from companion.state import CompanionStatePublisher, validate_command
+from companion.state import CompanionStatePublisher, initial_state, validate_command
 from companion.wake_word import normalize_text, wake_match_score
 
 
@@ -42,6 +42,18 @@ class WakeWordTests(unittest.TestCase):
         text = detector._transcribe(np.zeros(16000, dtype=np.float32))
         self.assertEqual(text, "Hey Tabby")
         self.assertEqual(backend.calls, [(16000, False, False)])
+
+
+class CompanionVisibilityTests(unittest.TestCase):
+    def test_companion_starts_unsummoned(self):
+        self.assertFalse(initial_state()["summoned"])
+
+    def test_summoned_latch_is_separate_from_state(self):
+        state = CompanionStatePublisher(enabled=True)
+        state.set_state("success")
+        self.assertFalse(state.snapshot()["summoned"])
+        state.set_summoned(True)
+        self.assertTrue(state.snapshot()["summoned"])
 
 
 class CommandValidationTests(unittest.TestCase):
@@ -86,13 +98,6 @@ class IPCTests(unittest.TestCase):
                     os.environ["XDG_RUNTIME_DIR"] = previous
 
 
-
-class BrowserBridgeTests(unittest.TestCase):
-    def test_disabled_bridge_never_acts(self):
-        from companion.browser_bridge import BrowserBridge
-        bridge = BrowserBridge({"companion_browser_bridge_enabled": False})
-        result = bridge.activate()
-        self.assertFalse(result["ok"])
 
 
 class MCPToolSurfaceTests(unittest.TestCase):

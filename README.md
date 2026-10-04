@@ -71,75 +71,51 @@ All model management is handled seamlessly within the Settings UI:
 MIT License
 
 
-## Hey Tabby companion (V0.1)
+## Hey Tabby companion (V0.2)
 
-Protocol7 now also contains the first thin wrapper around the real ChatGPT Voice
-experience. The existing dictation feature stays separate.
+Protocol7 wraps the real ChatGPT Voice experience without showing a browser or
+Zen tab. The visible UI is only the small Caelestia companion and its whiteboard.
 
 Flow:
 
 ```text
 "Hey Tabby"
     -> speech-gated wake detector using Protocol7’s configured STT backend/model
-    -> CompanionState / top Caelestia face
-    -> thin Zen browser bridge
-    -> real ChatGPT Voice
-    -> Companion OS/MCP can drive the local whiteboard socket
+    -> companion face appears
+    -> hidden persistent WebKitGTK ChatGPT runtime
+    -> real ChatGPT Voice starts
+    -> face stays visible while Voice is active
+    -> face disappears again when Voice ends
 ```
 
-The browser bridge is deliberately disposable. It focuses Zen and can open the
-configured dedicated ChatGPT conversation URL. Exact tab selection and pressing
-ChatGPT's Voice control belongs in the optional
-`~/.local/bin/hey-tabby-browser-bridge` extension/native-messaging helper; the
-core never scrapes ChatGPT content or clicks fixed screen coordinates.
+The hidden runtime uses its own persistent ChatGPT session under
+`~/.local/share/protocol-7/chatgpt-voice`. It has no address bar, tabs, browser
+chrome, or visible window during normal use. On first use only, if it is not
+authenticated, it may show a small standalone **Tabby — ChatGPT sign in** window.
+After sign-in the runtime returns to hidden operation and reuses the stored session.
 
-### Local whiteboard / HUD API
+The runtime is controlled only through a mode-0600 Unix socket at
+`$XDG_RUNTIME_DIR/protocol7-chatgpt-voice.sock`. Protocol7 can activate Voice,
+query whether the Voice session is still active, end the session, and show the
+one-time login surface. It does not open or focus Zen.
 
-The backend owns a mode-0600 Unix socket at
-`$XDG_RUNTIME_DIR/protocol7-companion.sock`. Commands are bounded JSON with a
-fixed vocabulary. The CLI is intended to be the first adapter target for the
-future Companion OS MCP tools:
+### Companion visibility
 
-```bash
-python -m companion.cli state listening
-python -m companion.cli text "Three trains found" --title "Hamburg -> Berlin"
-python -m companion.cli progress 0.65 --label "Building Sumi"
-python -m companion.cli choice "Use the fast route?" Yes No
-python -m companion.cli shape arrow 0.15 0.25 0.55 0.35
-python -m companion.cli clear
-```
+The shell panel is fully hidden in `idle`/`asleep`. Saying the wake phrase moves
+it to `wake`, then `listening` once ChatGPT Voice activates. Ending Voice returns
+it to `idle`, which removes the face and all reserved panel space from the shell.
 
-Whiteboard content is rendered as native QML structured primitives. V0.1 does
-not execute arbitrary HTML or shell commands.
+### Whiteboard / MCP
 
-### Companion settings
+The companion whiteboard remains native QML and supports text, progress, choices,
+line/arrow/rectangle/circle primitives. `python -m companion.mcp_server` exposes
+the stdio MCP tools `companion_set_state`, `whiteboard_show`, `whiteboard_hide`,
+`whiteboard_clear`, `whiteboard_write`, `whiteboard_progress`, `whiteboard_choice`,
+and `whiteboard_shape`. Every MCP call is validated again by the local companion
+IPC layer before reaching QML.
 
-Nexus -> Plugins -> Protocol7 exposes the companion toggle, wake-word toggle,
-wake phrase (default `Hey Tabby`), confidence threshold, cooldown, dedicated ChatGPT URL and browser-bridge toggle. Wake transcription reuses the main Protocol7 STT backend/model.
+### Wake transcription
 
-Wake detection deliberately shares Protocol7’s main transcription engine. If Protocol7 uses Groq, wake clips use the configured Groq Whisper model; if Protocol7 uses local Whisper, wake detection follows that local model.
-
-### MCP tools
-
-python -m companion.mcp_server starts a real stdio MCP server using the
-current MCP Python SDK. It exposes:
-
-- companion_set_state
-- whiteboard_show, whiteboard_hide, whiteboard_clear
-- whiteboard_write
-- whiteboard_progress
-- whiteboard_choice
-- whiteboard_shape
-
-The MCP process cannot run arbitrary shell commands. Every call is validated
-again by the local Companion IPC layer before it reaches the QML HUD.
-
-### Zen Voice bridge
-
-..browser_extension/ contains the browser-specific ChatGPT Voice adapter. The
-Protocol7 bridge focuses Zen and sends Ctrl+Alt+Shift+V; the extension chooses
-the pinned ChatGPT tab and activates Voice using semantic DOM metadata rather
-than screen coordinates. Keep the dedicated Companion conversation pinned so
-wake activations return to the same chat.
-
-Package it with ./scripts/package-voice-bridge.
+Wake detection deliberately shares Protocol7’s main transcription engine. With
+the current configuration that means Groq + `whisper-large-v3`. Wake requests
+do not fall back to the local `tiny.en` model if Groq fails.

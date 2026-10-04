@@ -28,6 +28,7 @@ def _unit(value: Any, default: float = 0.0) -> float:
 def initial_state(enabled: bool = True) -> dict[str, Any]:
     return {
         "enabled": bool(enabled),
+        "summoned": False,
         "state": "idle",
         "whiteboardVisible": False,
         "items": [],
@@ -144,3 +145,12 @@ class CompanionStatePublisher:
 
     def set_state(self, value: str) -> None:
         self.command({"command": "state", "value": value})
+
+    def set_summoned(self, value: bool) -> None:
+        with self._lock:
+            value = bool(value)
+            if bool(self._state.get("summoned")) == value:
+                return
+            self._state["summoned"] = value
+            self._state["sequence"] = int(self._state.get("sequence", 0)) + 1
+        self.publish()

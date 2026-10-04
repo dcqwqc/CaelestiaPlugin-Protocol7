@@ -33,9 +33,7 @@ DEFAULT_CONFIG = {
     "companion_wake_phrase": "Hey Tabby",
     "companion_wake_threshold": 0.84,
     "companion_wake_cooldown_seconds": 4.0,
-    "companion_url": "https://chatgpt.com/",
-    "companion_browser_bridge_enabled": True,
-    "companion_browser_helper": "~/.local/bin/hey-tabby-browser-bridge"
+    "companion_url": "https://chatgpt.com/"
 }
 
 def load_config():
