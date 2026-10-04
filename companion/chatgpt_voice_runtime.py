@@ -120,6 +120,10 @@ class VoiceRuntime:
         except BlockingIOError as error:
             raise SystemExit("Tabby ChatGPT Voice runtime is already running") from error
 
+        # Browser credentials and cookies created by this process should never
+        # be group/world-readable.
+        os.umask(0o077)
+
         home = Path.home()
         data_root = home / ".local/share/protocol-7/chatgpt-voice"
         cache_root = home / ".cache/protocol-7/chatgpt-voice"
@@ -142,6 +146,8 @@ class VoiceRuntime:
         cookie_manager.set_persistent_storage(
             str(cookie_db), WebKit2.CookiePersistentStorage.SQLITE
         )
+        if cookie_db.exists():
+            cookie_db.chmod(0o600)
         self.cookie_db = cookie_db
         self.context = WebKit2.WebContext.new_with_website_data_manager(manager)
         self.child_windows: list[tuple[Gtk.Window, WebKit2.WebView]] = []
