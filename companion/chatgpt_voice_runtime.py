@@ -125,10 +125,24 @@ class VoiceRuntime:
         cache_root = home / ".cache/protocol-7/chatgpt-voice"
         data_root.mkdir(parents=True, exist_ok=True)
         cache_root.mkdir(parents=True, exist_ok=True)
+        # The profile contains authentication cookies/credentials. Keep the
+        # profile private even if the user's default umask is permissive.
+        data_root.chmod(0o700)
+        cache_root.chmod(0o700)
 
         manager = WebKit2.WebsiteDataManager(
             base_data_directory=str(data_root), base_cache_directory=str(cache_root)
         )
+        # WebKitGTK does NOT persist cookies just because the data/cache
+        # directories are persistent. Explicitly opt into a durable cookie DB
+        # so ChatGPT auth survives runtime and shell restarts.
+        manager.set_persistent_credential_storage_enabled(True)
+        cookie_manager = manager.get_cookie_manager()
+        cookie_db = data_root / "cookies.sqlite"
+        cookie_manager.set_persistent_storage(
+            str(cookie_db), WebKit2.CookiePersistentStorage.SQLITE
+        )
+        self.cookie_db = cookie_db
         self.context = WebKit2.WebContext.new_with_website_data_manager(manager)
         self.child_windows: list[tuple[Gtk.Window, WebKit2.WebView]] = []
 
