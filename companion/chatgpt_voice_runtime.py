@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import socket
@@ -14,6 +15,11 @@ gi.require_version("WebKit2", "4.1")
 from gi.repository import GLib, Gtk, WebKit2
 
 MAX_PAYLOAD = 4096
+
+
+def runtime_lock_path() -> Path:
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
+    return runtime / "protocol7-chatgpt-voice.lock"
 
 
 def runtime_socket_path() -> Path:
@@ -103,6 +109,17 @@ END_SCRIPT = r'''(() => {
 
 class VoiceRuntime:
     def __init__(self):
+        # Exactly one WebKit runtime may own the persistent profile/socket.
+        # This prevents stale development/runtime copies from racing each
+        # other and corrupting debug/auth/Voice state.
+        lock_path = runtime_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock_file = lock_path.open("a+")
+        try:
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise SystemExit("Tabby ChatGPT Voice runtime is already running") from error
+
         home = Path.home()
         data_root = home / ".local/share/protocol-7/chatgpt-voice"
         cache_root = home / ".cache/protocol-7/chatgpt-voice"
@@ -127,6 +144,7 @@ class VoiceRuntime:
 
         self.loaded = False
         self.login_visible = False
+        self.debug_visible = False
         self._server = None
         self._server_thread = None
         self._stop = threading.Event()
@@ -146,6 +164,10 @@ class VoiceRuntime:
             view.connect("load-changed", self._on_main_load_changed)
 
     def _hide_instead(self, *args):
+        # In debug mode, visibility is owned by the plugin settings toggle,
+        # so the window close button cannot silently desync that setting.
+        if self.debug_visible:
+            return True
         self._hide_all_windows()
         return True
 
@@ -225,10 +247,26 @@ class VoiceRuntime:
             self.window.show_all(); self.window.present(); return False
         GLib.idle_add(show)
 
+    def _set_debug_visible(self, enabled: bool) -> None:
+        self.debug_visible = bool(enabled)
+        def apply():
+            if self.debug_visible:
+                self.window.set_title("Tabby — ChatGPT WebView Debug")
+                self.window.show_all()
+                self.window.present()
+            elif not self.login_visible:
+                self.window.hide()
+            return False
+        GLib.idle_add(apply)
+
     def _hide_all_windows(self) -> None:
         self.login_visible = False
         def hide():
-            self.window.hide()
+            if self.debug_visible:
+                self.window.set_title("Tabby — ChatGPT WebView Debug")
+                self.window.show_all()
+            else:
+                self.window.hide()
             for popup, _ in list(self.child_windows):
                 try: popup.hide()
                 except Exception: pass
@@ -240,6 +278,7 @@ class VoiceRuntime:
             return {"ok": True, "loaded": False, "phase": "loading", "active": False}
         result = self._eval(STATUS_SCRIPT)
         result["loaded"] = True
+        result["debugVisible"] = self.debug_visible
         return result
 
     def _activate(self) -> dict:
@@ -280,6 +319,9 @@ class VoiceRuntime:
             self._hide_all_windows(); return result
         if command == "show-login": self._show_login(); return {"ok": True}
         if command == "hide": self._hide_all_windows(); return {"ok": True}
+        if command == "set-debug":
+            self._set_debug_visible(bool(payload.get("enabled", False)))
+            return {"ok": True, "debugVisible": self.debug_visible}
         return {"ok": False, "result": "unsupported-command"}
 
     def _serve(self) -> None:

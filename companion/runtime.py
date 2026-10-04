@@ -16,6 +16,7 @@ class CompanionRuntime:
         self.state = CompanionStatePublisher(enabled=self.enabled)
         self.ipc = CompanionIPCServer(self.state.command)
         self.voice = VoiceRuntimeClient(config)
+        self.webview_debug = bool(config.get("companion_webview_debug", False))
         self._external_busy = busy or (lambda: False)
         self._voice_active = False
         self._monitor_thread: threading.Thread | None = None
@@ -164,6 +165,16 @@ class CompanionRuntime:
     def start(self) -> None:
         self._monitor_stop.clear()
         self.ipc.start()
+        # Sync the persistent ChatGPT runtime with the plugin debug toggle.
+        # Enabling debug intentionally starts the runtime immediately so the
+        # user can inspect it before saying the wake phrase.
+        if self.webview_debug:
+            self.voice.set_debug(True)
+        else:
+            # If an older runtime is already alive, hide it again. Do not
+            # launch a new process just to apply the default hidden state.
+            if self.voice.request("ping", ensure=False, timeout=0.2).get("ok"):
+                self.voice.set_debug(False)
         if self.enabled:
             self.wake.start()
 

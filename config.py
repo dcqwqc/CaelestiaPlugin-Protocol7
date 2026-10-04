@@ -33,7 +33,8 @@ DEFAULT_CONFIG = {
     "companion_wake_phrase": "Hey Tabby",
     "companion_wake_threshold": 0.84,
     "companion_wake_cooldown_seconds": 4.0,
-    "companion_url": "https://chatgpt.com/"
+    "companion_url": "https://chatgpt.com/",
+    "companion_webview_debug": False
 }
 
 def load_config():

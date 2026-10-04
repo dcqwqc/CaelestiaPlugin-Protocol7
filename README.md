@@ -119,3 +119,14 @@ IPC layer before reaching QML.
 Wake detection deliberately shares Protocol7’s main transcription engine. With
 the current configuration that means Groq + `whisper-large-v3`. Wake requests
 do not fall back to the local `tiny.en` model if Groq fails.
+
+### WebView debug mode
+
+Protocol7 plugin settings include **Show ChatGPT WebView (Debug)**. Turning it
+on starts/reuses the same persistent Tabby ChatGPT runtime and keeps its real
+WebKit view visible so login redirects, Voice controls, permission prompts and
+page state can be inspected directly. Turning it off hides the view again
+without logging out or replacing the persistent ChatGPT session.
+
+The runtime is singleton-locked in `$XDG_RUNTIME_DIR` so stale copies cannot
+race for the Voice IPC socket or produce conflicting authentication/debug state.

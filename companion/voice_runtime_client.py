@@ -66,14 +66,17 @@ class VoiceRuntimeClient:
             time.sleep(0.15)
         return False
 
-    def request(self, command: str, ensure: bool = True, timeout: float = 4.5) -> dict:
+    def request(self, command: str, ensure: bool = True, timeout: float = 4.5, payload: dict | None = None) -> dict:
         if ensure and not self.ensure_running():
             return {"ok": False, "result": "runtime-unavailable"}
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(timeout)
         try:
             client.connect(str(socket_path()))
-            client.sendall(json.dumps({"command": command}, separators=(",", ":")).encode("utf-8"))
+            message = {"command": command}
+            if payload:
+                message.update(payload)
+            client.sendall(json.dumps(message, separators=(",", ":")).encode("utf-8"))
             raw = client.recv(MAX_REPLY)
             if not raw:
                 return {"ok": False, "result": "empty-reply"}
@@ -106,3 +109,6 @@ class VoiceRuntimeClient:
 
     def hide(self) -> dict:
         return self.request("hide")
+
+    def set_debug(self, enabled: bool) -> dict:
+        return self.request("set-debug", payload={"enabled": bool(enabled)})

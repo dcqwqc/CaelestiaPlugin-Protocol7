@@ -144,6 +144,14 @@ SettingsObject {
         inputType: SettingMeta.TextField
     }
 
+    property bool companionWebviewDebug: false
+    SettingMeta on companionWebviewDebug {
+        label: "Show ChatGPT WebView (Debug)"
+        description: "Keep Tabby’s real ChatGPT WebView visible for debugging login, Voice activation and permissions."
+        icon: "bug_report"
+        inputType: SettingMeta.Switch
+    }
+
     // Appearance / integration
     property string accentColor: "#B57EDC"
     property bool useCaelestiaColors: true
