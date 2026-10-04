@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import Caelestia.Config
+import qs.services
 import dcqwqc.protocol7.services as P7
 
 Item {

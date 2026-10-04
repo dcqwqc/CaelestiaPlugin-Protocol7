@@ -138,7 +138,7 @@ again by the local Companion IPC layer before it reaches the QML HUD.
 
 ### Zen Voice bridge
 
-browser-extension/ contains the browser-specific ChatGPT Voice adapter. The
+browser_extension/ contains the browser-specific ChatGPT Voice adapter. The
 Protocol7 bridge focuses Zen and sends Ctrl+Alt+Shift+V; the extension chooses
 the pinned ChatGPT tab and activates Voice using semantic DOM metadata rather
 than screen coordinates. Keep the dedicated Companion conversation pinned so
