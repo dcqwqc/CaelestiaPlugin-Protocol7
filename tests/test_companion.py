@@ -31,7 +31,7 @@ class WakeWordTests(unittest.TestCase):
         detector=WakeWordDetector({'companion_wake_enabled':True},lambda text,score:None,transcriber=backend)
         text=detector._transcribe(np.zeros(16000,dtype=np.float32))
         self.assertEqual(text,'Hey Tabby')
-        self.assertEqual(backend.calls,[(16000,False,False)])
+        self.assertEqual(backend.calls,[(16000,True,True)])
 
 class WakeHandoffTests(unittest.TestCase):
     def test_protocol7_forwards_wake_to_tabby_socket(self):

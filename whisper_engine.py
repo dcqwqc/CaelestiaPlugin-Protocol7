@@ -34,7 +34,11 @@ class WhisperEngine:
             if use_groq and api_key:
                 try:
                     if self.groq_client is None or self.current_groq_key != api_key:
-                        self.groq_client = Groq(api_key=api_key)
+                        self.groq_client = Groq(
+                            api_key=api_key,
+                            timeout=float(self.config.get("groq_timeout_seconds", 5.0)),
+                            max_retries=0,
+                        )
                         self.current_groq_key = api_key
                     return
                 except Exception as error:
@@ -52,13 +56,20 @@ class WhisperEngine:
         if len(audio_data) < 8000:
             return ""
 
-        self._load_model()
+        # Partial/live recognition must never compete with the final cloud
+        # request. Use the fast local model for live preview and wake-word
+        # detection; reserve Groq for the final dictation only.
+        if live:
+            with self._lock:
+                self._load_local_model_locked()
+        else:
+            self._load_model()
         
         use_groq = self.config.get("use_groq", False)
         import time
         t0 = time.time()
         
-        if use_groq and self.groq_client:
+        if use_groq and self.groq_client and not live:
             print("Transcribing with Groq API...")
             try:
                 # Convert numpy array to wav in memory

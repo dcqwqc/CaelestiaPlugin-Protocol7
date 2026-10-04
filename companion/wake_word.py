@@ -94,8 +94,10 @@ class WakeWordDetector:
     def _transcribe(self, audio: np.ndarray) -> str:
         # Use the exact same shared WhisperEngine instance as Protocol 7
         # dictation. That means the wake path automatically follows the
-        # configured backend/model (currently Groq + whisper-large-v3).
-        return str(self.transcriber.transcribe(audio, live=False, allow_local_fallback=False) or "").strip()
+        # Wake-word checks are frequent and latency-sensitive. Route them through
+        # Protocol 7's local live path so they cannot saturate or rate-limit the
+        # cloud Whisper backend used for final dictation.
+        return str(self.transcriber.transcribe(audio, live=True, allow_local_fallback=True) or "").strip()
 
     def _worker(self) -> None:
         active: list[np.ndarray] = []
