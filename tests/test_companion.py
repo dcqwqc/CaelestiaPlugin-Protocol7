@@ -119,6 +119,37 @@ class CompanionLifecycleTests(unittest.TestCase):
         runtime._monitor_login()
         self.assertEqual(dismissed, [True])
 
+    def test_successful_setup_closes_tabby_without_starting_voice(self):
+        from companion.runtime import CompanionRuntime
+
+        class FakeVoice:
+            def __init__(self):
+                self.hidden = 0
+                self.activated = 0
+
+            def status(self):
+                return {"phase": "ready", "setupVisible": True, "loginVisible": True}
+
+            def hide(self):
+                self.hidden += 1
+
+            def activate(self):
+                self.activated += 1
+                return {"ok": True, "phase": "active"}
+
+        runtime = CompanionRuntime.__new__(CompanionRuntime)
+        runtime._monitor_stop = threading.Event()
+        runtime._voice_active = False
+        runtime.inactivity_timeout = 8.0
+        runtime.state = self.FakeState(True)
+        runtime.voice = FakeVoice()
+        dismissed = []
+        runtime._return_idle = lambda: dismissed.append(True)
+        runtime._monitor_login()
+        self.assertEqual(dismissed, [True])
+        self.assertEqual(runtime.voice.hidden, 1)
+        self.assertEqual(runtime.voice.activated, 0)
+
     def test_inactive_voice_auto_hides_after_grace_period(self):
         from companion.runtime import CompanionRuntime
 

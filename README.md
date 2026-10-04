@@ -130,3 +130,12 @@ without logging out or replacing the persistent ChatGPT session.
 
 The runtime is singleton-locked in `$XDG_RUNTIME_DIR` so stale copies cannot
 race for the Voice IPC socket or produce conflicting authentication/debug state.
+
+### Smart companion lifecycle
+
+Tabby dismisses setup and idle states automatically. Closing the one-time
+sign-in surface closes the companion too. A successful first-time sign-in ends
+setup (it does not unexpectedly start Voice); the next `Hey Tabby` starts the
+normal hidden Voice flow. Stalled non-active states auto-hide after an 8-second
+grace period, while real Voice startup and an active Voice session suppress the
+idle timeout.
