@@ -40,22 +40,27 @@ def wake_match_score(text: str, phrase: str = "Hey Tabby") -> float:
 
 
 class WakeWordDetector:
-    """Local-only, speech-gated V0.1 wake detector using faster-whisper."""
+    """Speech-gated wake detector using Protocol 7's configured STT backend."""
 
-    def __init__(self, config: dict, on_wake: Callable[[str, float], None], busy: Callable[[], bool] | None = None):
+    def __init__(
+        self,
+        config: dict,
+        on_wake: Callable[[str, float], None],
+        transcriber,
+        busy: Callable[[], bool] | None = None,
+    ):
         self.enabled = bool(config.get("companion_wake_enabled", True))
         self.phrase = str(config.get("companion_wake_phrase", "Hey Tabby")).strip() or "Hey Tabby"
         self.threshold = max(0.65, min(0.98, float(config.get("companion_wake_threshold", 0.84))))
         self.cooldown = max(1.0, min(30.0, float(config.get("companion_wake_cooldown_seconds", 4.0))))
         self.device = config.get("input_device")
-        self.model_name = str(config.get("companion_wake_model", "tiny.en"))
         self.on_wake = on_wake
+        self.transcriber = transcriber
         self.busy = busy or (lambda: False)
         self._queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=96)
         self._stop = threading.Event()
         self._stream = None
         self._thread = None
-        self._model = None
         self._last_wake = 0.0
         self._sample_rate = 16000
         self._speech_rms = 0.012
@@ -86,16 +91,11 @@ class WakeWordDetector:
             except queue.Empty:
                 pass
 
-    def _ensure_model(self):
-        if self._model is None:
-            from faster_whisper import WhisperModel
-            self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
-        return self._model
-
     def _transcribe(self, audio: np.ndarray) -> str:
-        model = self._ensure_model()
-        segments, _ = model.transcribe(audio, language="en", beam_size=1, vad_filter=True, condition_on_previous_text=False)
-        return "".join(segment.text for segment in segments).strip()
+        # Use the exact same shared WhisperEngine instance as Protocol 7
+        # dictation. That means the wake path automatically follows the
+        # configured backend/model (currently Groq + whisper-large-v3).
+        return str(self.transcriber.transcribe(audio, live=False) or "").strip()
 
     def _worker(self) -> None:
         active: list[np.ndarray] = []
@@ -131,7 +131,9 @@ class WakeWordDetector:
             active.clear()
             speaking = False
             silent_chunks = speech_chunks = 0
-            if len(audio) < int(self._sample_rate * 0.35):
+            # WhisperEngine ignores clips shorter than 0.5 s, so avoid a
+            # pointless backend/API call for them here as well.
+            if len(audio) < int(self._sample_rate * 0.5):
                 continue
             try:
                 text = self._transcribe(audio)

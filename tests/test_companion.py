@@ -21,6 +21,28 @@ class WakeWordTests(unittest.TestCase):
         self.assertLess(wake_match_score("maybe happy today"), 0.84)
         self.assertLess(wake_match_score("tabby"), 0.84)
 
+    def test_uses_injected_protocol7_transcriber(self):
+        import numpy as np
+        from companion.wake_word import WakeWordDetector
+
+        class FakeTranscriber:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, audio, live=False):
+                self.calls.append((len(audio), live))
+                return "Hey Tabby"
+
+        backend = FakeTranscriber()
+        detector = WakeWordDetector(
+            {"companion_wake_enabled": True},
+            lambda text, score: None,
+            transcriber=backend,
+        )
+        text = detector._transcribe(np.zeros(16000, dtype=np.float32))
+        self.assertEqual(text, "Hey Tabby")
+        self.assertEqual(backend.calls, [(16000, False)])
+
 
 class CommandValidationTests(unittest.TestCase):
     def test_rejects_unknown_commands(self):

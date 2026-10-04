@@ -98,7 +98,7 @@ SettingsObject {
     property bool companionWakeEnabled: true
     SettingMeta on companionWakeEnabled {
         label: "Wake word"
-        description: "Listen locally for the configured wake phrase. Audio is not sent to Groq."
+        description: "Listen for the configured wake phrase using Protocol 7’s current STT backend and model."
         icon: "record_voice_over"
         inputType: SettingMeta.Switch
     }
@@ -133,14 +133,8 @@ SettingsObject {
         step: 1
     }
 
-    property string companionWakeModel: "tiny.en"
-    SettingMeta on companionWakeModel {
-        label: "Local wake model"
-        description: "Small local faster-whisper model used only for wake detection."
-        icon: "memory"
-        inputType: SettingMeta.SplitButton
-        options: ["tiny.en", "base.en"]
-    }
+    // Wake transcription intentionally reuses Protocol 7's main STT backend
+    // and model selection instead of maintaining a second model.
 
     property string companionUrl: "https://chatgpt.com/"
     SettingMeta on companionUrl {

@@ -80,7 +80,7 @@ Flow:
 
 ```text
 "Hey Tabby"
-    -> local speech-gated wake detector (faster-whisper, never Groq)
+    -> speech-gated wake detector using Protocol7’s configured STT backend/model
     -> CompanionState / top Caelestia face
     -> thin Zen browser bridge
     -> real ChatGPT Voice
@@ -115,11 +115,9 @@ not execute arbitrary HTML or shell commands.
 ### Companion settings
 
 Nexus -> Plugins -> Protocol7 exposes the companion toggle, wake-word toggle,
-wake phrase (default `Hey Tabby`), confidence threshold, cooldown, local wake
-model, dedicated ChatGPT URL and browser-bridge toggle.
+wake phrase (default `Hey Tabby`), confidence threshold, cooldown, dedicated ChatGPT URL and browser-bridge toggle. Wake transcription reuses the main Protocol7 STT backend/model.
 
-The wake model is always local even when ordinary Protocol7 dictation is
-configured to use Groq.
+Wake detection deliberately shares Protocol7’s main transcription engine. If Protocol7 uses Groq, wake clips use the configured Groq Whisper model; if Protocol7 uses local Whisper, wake detection follows that local model.
 
 ### MCP tools
 

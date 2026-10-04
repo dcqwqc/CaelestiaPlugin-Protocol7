@@ -112,6 +112,7 @@ class Protocol7App:
         self.control = ControlServer(self._handle_control_command)
         self.companion = CompanionRuntime(
             self.config,
+            transcriber=self.whisper_engine,
             busy=lambda: bool(self.is_active or self.is_processing),
         )
 

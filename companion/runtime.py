@@ -9,13 +9,13 @@ from companion.wake_word import WakeWordDetector
 
 
 class CompanionRuntime:
-    def __init__(self, config: dict, busy=None):
+    def __init__(self, config: dict, transcriber, busy=None):
         self.config = config
         self.enabled = bool(config.get("companion_enabled", True))
         self.state = CompanionStatePublisher(enabled=self.enabled)
         self.ipc = CompanionIPCServer(self.state.command)
         self.browser = BrowserBridge(config)
-        self.wake = WakeWordDetector(config, self._on_wake, busy=busy)
+        self.wake = WakeWordDetector(config, self._on_wake, transcriber=transcriber, busy=busy)
         self._idle_timer: threading.Timer | None = None
 
     def _on_wake(self, transcript: str, score: float) -> None:

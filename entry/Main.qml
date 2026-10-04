@@ -58,7 +58,6 @@ Scope {
             companion_wake_phrase: settings.companionWakePhrase,
             companion_wake_threshold: settings.companionWakeThreshold / 100.0,
             companion_wake_cooldown_seconds: settings.companionWakeCooldownSeconds,
-            companion_wake_model: settings.companionWakeModel,
             companion_url: settings.companionUrl,
             companion_browser_bridge_enabled: settings.companionBrowserBridgeEnabled,
             native_caelestia_ui: true
