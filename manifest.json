@@ -4,7 +4,7 @@
   "author": "dcqwqc",
   "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-Protocol7",
   "icon": "mic",
-  "description": "Hotkey-triggered voice dictation powered by Whisper (local or Groq cloud). Hold your hotkey, speak, and text is typed instantly anywhere.",
+  "description": "Protocol7 voice dictation plus Hey Tabby, the wake-word ChatGPT Voice companion with persistent hidden WebView and whiteboard.",
   "entryPoints": [
     {
       "type": "custom",

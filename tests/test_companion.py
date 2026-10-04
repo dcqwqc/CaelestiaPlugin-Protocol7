@@ -1,6 +1,7 @@
 import os
 import stat
 import tempfile
+import threading
 import unittest
 
 from companion.ipc import CompanionIPCServer, send_command, socket_path
@@ -54,6 +55,87 @@ class CompanionVisibilityTests(unittest.TestCase):
         self.assertFalse(state.snapshot()["summoned"])
         state.set_summoned(True)
         self.assertTrue(state.snapshot()["summoned"])
+
+
+class CompanionLifecycleTests(unittest.TestCase):
+    class FakeState:
+        def __init__(self, summoned=True):
+            self.summoned = summoned
+
+        def snapshot(self):
+            return {"summoned": self.summoned, "state": "approval"}
+
+        def command(self, command):
+            return {"ok": True}
+
+        def set_state(self, value):
+            pass
+
+    def test_idle_timeout_dismisses_stalled_companion(self):
+        from companion.runtime import CompanionRuntime
+        runtime = CompanionRuntime.__new__(CompanionRuntime)
+        runtime._voice_active = False
+        runtime._activation_in_progress = False
+        runtime._hide_timer = None
+        runtime.state = self.FakeState(True)
+        dismissed = []
+        runtime._return_idle = lambda: dismissed.append(True)
+        runtime._idle_timeout()
+        self.assertEqual(dismissed, [True])
+
+    def test_idle_timeout_waits_for_voice_startup(self):
+        from companion.runtime import CompanionRuntime
+        runtime = CompanionRuntime.__new__(CompanionRuntime)
+        runtime._voice_active = False
+        runtime._activation_in_progress = True
+        runtime._hide_timer = None
+        runtime.state = self.FakeState(True)
+        delays = []
+        runtime._schedule_idle = lambda delay=3.0: delays.append(delay)
+        runtime._idle_timeout()
+        self.assertEqual(delays, [3.0])
+
+    def test_closing_visible_login_surface_dismisses_tabby(self):
+        from companion.runtime import CompanionRuntime
+
+        class FakeVoice:
+            def __init__(self):
+                self.calls = 0
+
+            def status(self):
+                self.calls += 1
+                if self.calls == 1:
+                    return {"phase": "needs-login", "setupVisible": True, "loginVisible": True}
+                return {"phase": "needs-login", "setupVisible": False, "loginVisible": False}
+
+        runtime = CompanionRuntime.__new__(CompanionRuntime)
+        runtime._monitor_stop = threading.Event()
+        runtime._voice_active = False
+        runtime.inactivity_timeout = 8.0
+        runtime.state = self.FakeState(True)
+        runtime.voice = FakeVoice()
+        dismissed = []
+        runtime._return_idle = lambda: dismissed.append(True)
+        runtime._monitor_login()
+        self.assertEqual(dismissed, [True])
+
+    def test_inactive_voice_auto_hides_after_grace_period(self):
+        from companion.runtime import CompanionRuntime
+
+        class FakeVoice:
+            def status(self):
+                return {"phase": "ready", "active": False}
+
+        runtime = CompanionRuntime.__new__(CompanionRuntime)
+        runtime._monitor_stop = threading.Event()
+        runtime._voice_active = True
+        runtime.inactivity_timeout = 0.05
+        runtime.voice = FakeVoice()
+        dismissed = []
+        runtime._return_idle = lambda: dismissed.append(True)
+        runtime._monitor_voice()
+        self.assertEqual(dismissed, [True])
+
 
 
 class CommandValidationTests(unittest.TestCase):

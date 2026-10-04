@@ -60,6 +60,7 @@ Scope {
             companion_wake_cooldown_seconds: settings.companionWakeCooldownSeconds,
             companion_url: settings.companionUrl,
             companion_webview_debug: settings.companionWebviewDebug,
+            companion_auto_hide_seconds: settings.companionAutoHideSeconds,
             native_caelestia_ui: true
         });
     }
@@ -230,6 +231,7 @@ Scope {
         function onCompanionWakeCooldownSecondsChanged(): void { root.applySettings(true); }
         function onCompanionUrlChanged(): void { root.applySettings(true); }
         function onCompanionWebviewDebugChanged(): void { root.applySettings(true); }
+        function onCompanionAutoHideSecondsChanged(): void { root.applySettings(true); }
     }
 
     IpcHandler {

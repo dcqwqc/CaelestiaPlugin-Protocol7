@@ -34,7 +34,8 @@ DEFAULT_CONFIG = {
     "companion_wake_threshold": 0.84,
     "companion_wake_cooldown_seconds": 4.0,
     "companion_url": "https://chatgpt.com/",
-    "companion_webview_debug": False
+    "companion_webview_debug": False,
+    "companion_auto_hide_seconds": 5.0
 }
 
 def load_config():

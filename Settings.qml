@@ -152,6 +152,17 @@ SettingsObject {
         inputType: SettingMeta.Switch
     }
 
+    property int companionAutoHideSeconds: 5
+    SettingMeta on companionAutoHideSeconds {
+        label: "Tabby auto-hide delay"
+        description: "Hide Tabby after this many seconds when no Voice session or setup window is active."
+        icon: "timer_off"
+        inputType: SettingMeta.SpinBox
+        min: 2
+        max: 30
+        step: 1
+    }
+
     // Appearance / integration
     property string accentColor: "#B57EDC"
     property bool useCaelestiaColors: true

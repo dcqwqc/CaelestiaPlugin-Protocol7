@@ -287,18 +287,26 @@ class VoiceRuntime:
                 self.window.show_all()
             else:
                 self.window.hide()
-            for popup, _ in list(self.child_windows):
-                try: popup.hide()
+            children = list(self.child_windows)
+            self.child_windows.clear()
+            for popup, _ in children:
+                try: popup.destroy()
                 except Exception: pass
             return False
         GLib.idle_add(hide)
 
     def _status(self) -> dict:
         if not self.loaded:
-            return {"ok": True, "loaded": False, "phase": "loading", "active": False}
+            return {
+                "ok": True, "loaded": False, "phase": "loading", "active": False,
+                "debugVisible": self.debug_visible, "loginVisible": self.login_visible,
+                "setupVisible": self.login_visible,
+            }
         result = self._eval(STATUS_SCRIPT)
         result["loaded"] = True
         result["debugVisible"] = self.debug_visible
+        result["loginVisible"] = self.login_visible
+        result["setupVisible"] = self.login_visible
         return result
 
     def _activate(self) -> dict:
