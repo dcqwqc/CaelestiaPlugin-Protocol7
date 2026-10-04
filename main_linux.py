@@ -8,7 +8,7 @@ from hotkey_linux import HotkeyListener
 from audio import AudioRecorder
 from native_bridge import NativeUIBridge
 from control_ipc import ControlServer
-from companion.runtime import CompanionRuntime
+from companion.wake_runtime import WakeRuntime
 
 
 def log_debug(msg):
@@ -110,7 +110,7 @@ class Protocol7App:
         self._live_thread = None
         self._dictation_lock = threading.RLock()
         self.control = ControlServer(self._handle_control_command)
-        self.companion = CompanionRuntime(
+        self.tabby_wake = WakeRuntime(
             self.config,
             transcriber=self.whisper_engine,
             busy=lambda: bool(self.is_active or self.is_processing),
@@ -424,7 +424,7 @@ class Protocol7App:
         ).start()
 
         self.control.start()
-        self.companion.start()
+        self.tabby_wake.start()
         self.hotkey.start()
         self.tray.start()
 
@@ -433,7 +433,7 @@ class Protocol7App:
         except KeyboardInterrupt:
             log_debug("Exiting...")
         finally:
-            self.companion.stop()
+            self.tabby_wake.stop()
             self.control.stop()
             self.hotkey.stop()
             self.tray.stop()

@@ -4,7 +4,7 @@
   "author": "dcqwqc",
   "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-Protocol7",
   "icon": "mic",
-  "description": "Protocol7 voice dictation plus Hey Tabby, the wake-word ChatGPT Voice companion with a hidden Zen/Firefox Voice engine and whiteboard.",
+  "description": "Fast voice dictation with shared Groq/local Whisper, plus Tabby wake-word recognition. The Tabby assistant itself is a separate plugin.",
   "entryPoints": [
     {
       "type": "custom",
@@ -18,17 +18,6 @@
         "alignment": "center",
         "interactive": false,
         "deformAmount": 0.03,
-        "motionDuration": 180
-      }
-    },
-    {
-      "type": "shell-panel",
-      "source": "CompanionPanel.qml",
-      "properties": {
-        "edge": "top",
-        "alignment": "center",
-        "interactive": false,
-        "deformAmount": 0.025,
         "motionDuration": 180
       }
     }

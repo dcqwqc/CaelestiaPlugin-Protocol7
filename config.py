@@ -28,14 +28,10 @@ DEFAULT_CONFIG = {
     "ollama_model": "llama3.2",
     "llm_system_prompt": "You are an STT editor. Remove filler words, fix stutters and self-corrections, correct obvious transcription errors, and add punctuation. Output only the cleaned text.",
     "show_tray": True,
-    "companion_enabled": True,
     "companion_wake_enabled": True,
     "companion_wake_phrase": "Hey Tabby",
     "companion_wake_threshold": 0.84,
-    "companion_wake_cooldown_seconds": 4.0,
-    "companion_url": "https://chatgpt.com/",
-    "companion_webview_debug": False,
-    "companion_auto_hide_seconds": 5.0
+    "companion_wake_cooldown_seconds": 4.0
 }
 
 def load_config():

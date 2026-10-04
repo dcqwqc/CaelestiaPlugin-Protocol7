@@ -53,14 +53,10 @@ Scope {
             theme_mode: settings.themeMode,
             autostart: settings.autostart,
             show_tray: settings.showTray,
-            companion_enabled: settings.companionEnabled,
             companion_wake_enabled: settings.companionWakeEnabled,
             companion_wake_phrase: settings.companionWakePhrase,
             companion_wake_threshold: settings.companionWakeThreshold / 100.0,
             companion_wake_cooldown_seconds: settings.companionWakeCooldownSeconds,
-            companion_url: settings.companionUrl,
-            companion_webview_debug: settings.companionWebviewDebug,
-            companion_auto_hide_seconds: settings.companionAutoHideSeconds,
             native_caelestia_ui: true
         });
     }
@@ -159,7 +155,6 @@ Scope {
 "
             onRead: data => {
                 P7.ProtocolState.applyMessage(data);
-                P7.CompanionState.applyMessage(data);
             }
         }
 
@@ -174,7 +169,6 @@ Scope {
 
         onExited: {
             P7.ProtocolState.reset();
-            P7.CompanionState.reset();
         }
     }
 
@@ -224,14 +218,10 @@ Scope {
         function onThemeModeChanged(): void { root.applySettings(false); }
         function onAutostartChanged(): void { root.applySettings(false); }
         function onShowTrayChanged(): void { root.applySettings(true); }
-        function onCompanionEnabledChanged(): void { root.applySettings(true); }
         function onCompanionWakeEnabledChanged(): void { root.applySettings(true); }
         function onCompanionWakePhraseChanged(): void { root.applySettings(true); }
         function onCompanionWakeThresholdChanged(): void { root.applySettings(true); }
         function onCompanionWakeCooldownSecondsChanged(): void { root.applySettings(true); }
-        function onCompanionUrlChanged(): void { root.applySettings(true); }
-        function onCompanionWebviewDebugChanged(): void { root.applySettings(true); }
-        function onCompanionAutoHideSecondsChanged(): void { root.applySettings(true); }
     }
 
     IpcHandler {

@@ -524,19 +524,12 @@ ColumnLayout {
         }
     }
 
-    SectionHeader { text: "Hey Tabby / ChatGPT Voice" }
+    SectionHeader { text: "Tabby Wake Word" }
 
     ToggleRow {
         first: true
-        text: "Hey Tabby companion"
-        subtext: "Enable the wake-word ChatGPT Voice companion."
-        checked: root.settings?.companionEnabled ?? true
-        onToggled: if (root.settings) root.settings.companionEnabled = checked
-    }
-
-    ToggleRow {
         text: "Wake word listening"
-        subtext: "Listen for the configured phrase using Protocol7's current STT backend."
+        subtext: "Protocol7 only recognizes the wake phrase; the standalone Tabby plugin owns the assistant UI and ChatGPT session."
         checked: root.settings?.companionWakeEnabled ?? true
         onToggled: if (root.settings) root.settings.companionWakeEnabled = checked
     }
@@ -565,6 +558,7 @@ ColumnLayout {
 
     StepperRow {
         Layout.fillWidth: true
+        last: true
         label: "Wake cooldown"
         subtext: "Seconds before the wake phrase can trigger again."
         from: 1
@@ -572,33 +566,6 @@ ColumnLayout {
         stepSize: 1
         value: root.settings?.companionWakeCooldownSeconds ?? 4
         onMoved: value => { if (root.settings) root.settings.companionWakeCooldownSeconds = Math.round(value); }
-    }
-
-    ToggleRow {
-        text: "Show Tabby Voice Engine (Debug)"
-        subtext: "Developer mode: reveal Tabby's dedicated Zen/Firefox ChatGPT tab so login, Voice and permissions can be inspected."
-        checked: root.settings?.companionWebviewDebug ?? false
-        onToggled: if (root.settings) root.settings.companionWebviewDebug = checked
-    }
-
-    StepperRow {
-        Layout.fillWidth: true
-        label: "Tabby auto-hide delay"
-        subtext: "Seconds before Tabby hides when no setup or Voice session is active."
-        from: 2
-        to: 30
-        stepSize: 1
-        value: root.settings?.companionAutoHideSeconds ?? 5
-        onMoved: value => { if (root.settings) root.settings.companionAutoHideSeconds = Math.round(value); }
-    }
-
-    P7TextFieldRow {
-        last: true
-        label: "ChatGPT URL"
-        subtext: "Normally leave this at chatgpt.com."
-        value: root.settings?.companionUrl ?? "https://chatgpt.com/"
-        placeholderText: "https://chatgpt.com/"
-        onEdited: value => { if (root.settings) root.settings.companionUrl = value.trim(); }
     }
 
     SectionHeader { text: "Appearance & Integration" }

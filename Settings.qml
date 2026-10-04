@@ -86,27 +86,20 @@ SettingsObject {
     property string llmSystemPrompt: "You are an expert Speech-to-Text editor. Remove filler words and stutters, apply self-corrections, fix obvious transcription errors, add punctuation and capitalization, preserve the speaker's intended meaning and tone, and output only the cleaned text."
 
 
-    // Hey Tabby / ChatGPT Voice companion
-    property bool companionEnabled: true
-    SettingMeta on companionEnabled {
-        label: "Hey Tabby companion"
-        description: "Show the small Caelestia companion and enable its local control surface."
-        icon: "smart_toy"
-        inputType: SettingMeta.Switch
-    }
-
+    // Tabby wake recognition only. The standalone Tabby plugin owns all
+    // presentation, ChatGPT/Zen state, input and lifecycle settings.
     property bool companionWakeEnabled: true
     SettingMeta on companionWakeEnabled {
-        label: "Wake word"
-        description: "Listen for the configured wake phrase using Protocol 7’s current STT backend and model."
+        label: "Tabby wake word"
+        description: "Listen for Tabby's wake phrase using Protocol7's selected STT backend/model."
         icon: "record_voice_over"
         inputType: SettingMeta.Switch
     }
 
     property string companionWakePhrase: "Hey Tabby"
     SettingMeta on companionWakePhrase {
-        label: "Wake phrase"
-        description: "Phrase used to summon the ChatGPT Voice wrapper."
+        label: "Tabby wake phrase"
+        description: "Phrase Protocol7 recognizes before handing control to the standalone Tabby plugin."
         icon: "graphic_eq"
         inputType: SettingMeta.TextField
     }
@@ -114,7 +107,7 @@ SettingsObject {
     property int companionWakeThreshold: 84
     SettingMeta on companionWakeThreshold {
         label: "Wake confidence"
-        description: "Higher values reduce accidental wake activations."
+        description: "Higher values reduce accidental Tabby activations."
         icon: "tune"
         inputType: SettingMeta.SpinBox
         min: 65
@@ -125,40 +118,10 @@ SettingsObject {
     property int companionWakeCooldownSeconds: 4
     SettingMeta on companionWakeCooldownSeconds {
         label: "Wake cooldown"
-        description: "Minimum seconds before the wake word may trigger again."
+        description: "Minimum seconds before Protocol7 may trigger Tabby again."
         icon: "timer"
         inputType: SettingMeta.SpinBox
         min: 1
-        max: 30
-        step: 1
-    }
-
-    // Wake transcription intentionally reuses Protocol 7's main STT backend
-    // and model selection instead of maintaining a second model.
-
-    property string companionUrl: "https://chatgpt.com/"
-    SettingMeta on companionUrl {
-        label: "Companion ChatGPT URL"
-        description: "Dedicated ChatGPT URL used by Tabby’s hidden Zen/Firefox Voice engine."
-        icon: "link"
-        inputType: SettingMeta.TextField
-    }
-
-    property bool companionWebviewDebug: false
-    SettingMeta on companionWebviewDebug {
-        label: "Show Tabby Voice Engine (Debug)"
-        description: "Reveal Tabby’s dedicated Zen/Firefox ChatGPT tab for debugging login, Voice activation and permissions."
-        icon: "bug_report"
-        inputType: SettingMeta.Switch
-    }
-
-    property int companionAutoHideSeconds: 5
-    SettingMeta on companionAutoHideSeconds {
-        label: "Tabby auto-hide delay"
-        description: "Hide Tabby after this many seconds when no Voice session or setup window is active."
-        icon: "timer_off"
-        inputType: SettingMeta.SpinBox
-        min: 2
         max: 30
         step: 1
     }
