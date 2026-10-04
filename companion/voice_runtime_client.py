@@ -91,7 +91,7 @@ class VoiceRuntimeClient:
         while time.monotonic() < deadline:
             status = self.request("status", ensure=False, timeout=1.0)
             if status.get("loaded"):
-                return self.request("activate", ensure=False, timeout=5.0)
+                return self.request("activate", ensure=False, timeout=16.0)
             time.sleep(0.2)
         return {"ok": False, "result": "loading-timeout"}
 
@@ -103,3 +103,6 @@ class VoiceRuntimeClient:
 
     def show_login(self) -> dict:
         return self.request("show-login")
+
+    def hide(self) -> dict:
+        return self.request("hide")

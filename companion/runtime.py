@@ -19,6 +19,7 @@ class CompanionRuntime:
         self._external_busy = busy or (lambda: False)
         self._voice_active = False
         self._monitor_thread: threading.Thread | None = None
+        self._login_monitor_thread: threading.Thread | None = None
         self._monitor_stop = threading.Event()
         self._hide_timer: threading.Timer | None = None
         self.wake = WakeWordDetector(
@@ -37,6 +38,7 @@ class CompanionRuntime:
 
     def _return_idle(self) -> None:
         self._voice_active = False
+        self.voice.hide()
         self.state.command({"command": "clear"})
         self.state.set_state("idle")
         self.state.set_summoned(False)
@@ -50,73 +52,117 @@ class CompanionRuntime:
         self.state.set_state("wake")
         threading.Thread(target=self._activate_voice, name="hey-tabby-voice", daemon=True).start()
 
+    def _set_listening(self) -> None:
+        self._voice_active = True
+        self.voice.hide()
+        self.state.command({"command": "clear"})
+        self.state.set_state("listening")
+        self._ensure_voice_monitor()
+
+    def _show_login_state(self) -> None:
+        self._voice_active = False
+        self.state.set_state("approval")
+        self.state.command({"command": "clear"})
+        self.state.command({
+            "command": "text",
+            "title": "One-time sign in",
+            "text": "Sign in once. Tabby will close this automatically and start Voice when the session is ready.",
+        })
+        self.voice.show_login()
+        self._ensure_login_monitor()
+
+    def _handle_activation_result(self, result: dict) -> bool:
+        phase = str(result.get("phase", ""))
+        outcome = str(result.get("result", ""))
+        if result.get("ok") and (phase == "active" or outcome in {"active", "already-active"}):
+            self._set_listening()
+            return True
+        if phase == "needs-login" or outcome == "needs-login":
+            self._show_login_state()
+            return True
+        return False
+
     def _activate_voice(self) -> None:
         result = self.voice.activate()
-        outcome = str(result.get("result", ""))
-        if result.get("ok") and outcome in {"clicked", "already-active"}:
-            self._voice_active = True
-            self.state.command({"command": "clear"})
-            self.state.set_state("listening")
-            self._ensure_monitor()
+        if self._handle_activation_result(result):
             return
-        if outcome == "needs-login":
-            self._voice_active = False
-            self.state.set_state("approval")
-            self.state.command({
-                "command": "text",
-                "title": "One-time sign in",
-                "text": "Sign in to ChatGPT in the Tabby window. After that, it stays hidden.",
-            })
-            return
-        if outcome == "loading":
-            time.sleep(1.0)
-            retry = self.voice.activate()
-            retry_outcome = str(retry.get("result", ""))
-            if retry.get("ok") and retry_outcome in {"clicked", "already-active"}:
-                self._voice_active = True
-                self.state.command({"command": "clear"})
-                self.state.set_state("listening")
-                self._ensure_monitor()
-                return
-            if retry_outcome == "needs-login":
-                self.state.set_state("approval")
-                return
         self.state.set_state("error")
         self._schedule_idle(3.0)
 
-    def _ensure_monitor(self) -> None:
+    def _ensure_login_monitor(self) -> None:
+        if self._login_monitor_thread and self._login_monitor_thread.is_alive():
+            return
+        self._login_monitor_thread = threading.Thread(
+            target=self._monitor_login,
+            name="hey-tabby-login-monitor",
+            daemon=True,
+        )
+        self._login_monitor_thread.start()
+
+    def _monitor_login(self) -> None:
+        # A first-time OAuth/password flow may involve several redirects or a
+        # child WebKit window. Keep watching the *main* persistent ChatGPT
+        # surface until it is both authenticated and has a Voice control.
+        deadline = time.monotonic() + 300.0
+        while not self._monitor_stop.is_set() and time.monotonic() < deadline:
+            snapshot = self.state.snapshot()
+            if not snapshot.get("summoned") or self._voice_active:
+                return
+
+            status = self.voice.status()
+            phase = str(status.get("phase", ""))
+            if phase == "needs-login" or phase in {"loading", "unavailable", ""}:
+                self._monitor_stop.wait(0.6)
+                continue
+
+            if phase in {"ready", "active"}:
+                # Auth is genuinely complete and the real Voice surface exists.
+                self.voice.hide()
+                self.state.command({"command": "clear"})
+                self.state.set_state("wake")
+                result = self.voice.activate()
+                if self._handle_activation_result(result):
+                    return
+                self.state.set_state("error")
+                self._schedule_idle(3.0)
+                return
+
+            self._monitor_stop.wait(0.6)
+
+        if self.state.snapshot().get("summoned") and not self._voice_active:
+            self.state.set_state("error")
+            self._schedule_idle(3.0)
+
+    def _ensure_voice_monitor(self) -> None:
         if self._monitor_thread and self._monitor_thread.is_alive():
             return
-        self._monitor_stop.clear()
-        self._monitor_thread = threading.Thread(target=self._monitor_voice, name="hey-tabby-voice-monitor", daemon=True)
+        self._monitor_thread = threading.Thread(
+            target=self._monitor_voice,
+            name="hey-tabby-voice-monitor",
+            daemon=True,
+        )
         self._monitor_thread.start()
 
     def _monitor_voice(self) -> None:
-        seen_active = False
         inactive_polls = 0
-        grace_deadline = time.monotonic() + 12.0
         while not self._monitor_stop.is_set() and self._voice_active:
-            result = self.voice.status()
-            if result.get("loggedOut"):
-                self._voice_active = False
-                self.state.set_state("approval")
-                return
-            if result.get("active"):
-                seen_active = True
+            status = self.voice.status()
+            phase = str(status.get("phase", ""))
+            if phase == "active":
                 inactive_polls = 0
-                if self.state.snapshot().get("state") in {"wake", "idle", "asleep"}:
-                    self.state.set_state("listening")
+            elif phase == "needs-login":
+                self._voice_active = False
+                self._show_login_state()
+                return
             else:
                 inactive_polls += 1
-                if seen_active and inactive_polls >= 3:
-                    self._return_idle()
-                    return
-                if not seen_active and time.monotonic() > grace_deadline:
+                if inactive_polls >= 3:
                     self._return_idle()
                     return
             self._monitor_stop.wait(0.8)
 
     def start(self) -> None:
+        self._monitor_stop.clear()
         self.ipc.start()
         if self.enabled:
             self.wake.start()
