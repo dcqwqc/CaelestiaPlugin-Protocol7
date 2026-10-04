@@ -8,6 +8,7 @@ from hotkey_linux import HotkeyListener
 from audio import AudioRecorder
 from native_bridge import NativeUIBridge
 from control_ipc import ControlServer
+from companion.runtime import CompanionRuntime
 
 
 def log_debug(msg):
@@ -109,6 +110,10 @@ class Protocol7App:
         self._live_thread = None
         self._dictation_lock = threading.RLock()
         self.control = ControlServer(self._handle_control_command)
+        self.companion = CompanionRuntime(
+            self.config,
+            busy=lambda: bool(self.is_active or self.is_processing),
+        )
 
         # KEY_LEFTCTRL = 29.
         self.hotkey = HotkeyListener(
@@ -418,6 +423,7 @@ class Protocol7App:
         ).start()
 
         self.control.start()
+        self.companion.start()
         self.hotkey.start()
         self.tray.start()
 
@@ -426,6 +432,7 @@ class Protocol7App:
         except KeyboardInterrupt:
             log_debug("Exiting...")
         finally:
+            self.companion.stop()
             self.control.stop()
             self.hotkey.stop()
             self.tray.stop()

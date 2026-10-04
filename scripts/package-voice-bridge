@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+out="${1:-$root/dist/hey-tabby-voice-bridge.xpi}"
+mkdir -p "$(dirname "$out")"
+python3 - "$root/browser-extension" "$out" <<'PY'
+from pathlib import Path
+import sys
+import zipfile
+src = Path(sys.argv[1])
+out = Path(sys.argv[2])
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+    for name in ("manifest.json", "background.js", "content.js", "README.md"):
+        archive.write(src / name, name)
+print(out)
+PY

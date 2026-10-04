@@ -27,7 +27,16 @@ DEFAULT_CONFIG = {
     "ollama_endpoint": "http://127.0.0.1:11434",
     "ollama_model": "llama3.2",
     "llm_system_prompt": "You are an STT editor. Remove filler words, fix stutters and self-corrections, correct obvious transcription errors, and add punctuation. Output only the cleaned text.",
-    "show_tray": True
+    "show_tray": True,
+    "companion_enabled": True,
+    "companion_wake_enabled": True,
+    "companion_wake_phrase": "Hey Tabby",
+    "companion_wake_threshold": 0.84,
+    "companion_wake_cooldown_seconds": 4.0,
+    "companion_wake_model": "tiny.en",
+    "companion_url": "https://chatgpt.com/",
+    "companion_browser_bridge_enabled": True,
+    "companion_browser_helper": "~/.local/bin/hey-tabby-browser-bridge"
 }
 
 def load_config():

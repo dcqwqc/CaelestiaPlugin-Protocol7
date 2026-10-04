@@ -85,6 +85,79 @@ SettingsObject {
 
     property string llmSystemPrompt: "You are an expert Speech-to-Text editor. Remove filler words and stutters, apply self-corrections, fix obvious transcription errors, add punctuation and capitalization, preserve the speaker's intended meaning and tone, and output only the cleaned text."
 
+
+    // Hey Tabby / ChatGPT Voice companion
+    property bool companionEnabled: true
+    SettingMeta on companionEnabled {
+        label: "Hey Tabby companion"
+        description: "Show the small Caelestia companion and enable its local control surface."
+        icon: "smart_toy"
+        inputType: SettingMeta.Switch
+    }
+
+    property bool companionWakeEnabled: true
+    SettingMeta on companionWakeEnabled {
+        label: "Wake word"
+        description: "Listen locally for the configured wake phrase. Audio is not sent to Groq."
+        icon: "record_voice_over"
+        inputType: SettingMeta.Switch
+    }
+
+    property string companionWakePhrase: "Hey Tabby"
+    SettingMeta on companionWakePhrase {
+        label: "Wake phrase"
+        description: "Phrase used to summon the ChatGPT Voice wrapper."
+        icon: "graphic_eq"
+        inputType: SettingMeta.TextField
+    }
+
+    property int companionWakeThreshold: 84
+    SettingMeta on companionWakeThreshold {
+        label: "Wake confidence"
+        description: "Higher values reduce accidental wake activations."
+        icon: "tune"
+        inputType: SettingMeta.SpinBox
+        min: 65
+        max: 98
+        step: 1
+    }
+
+    property int companionWakeCooldownSeconds: 4
+    SettingMeta on companionWakeCooldownSeconds {
+        label: "Wake cooldown"
+        description: "Minimum seconds before the wake word may trigger again."
+        icon: "timer"
+        inputType: SettingMeta.SpinBox
+        min: 1
+        max: 30
+        step: 1
+    }
+
+    property string companionWakeModel: "tiny.en"
+    SettingMeta on companionWakeModel {
+        label: "Local wake model"
+        description: "Small local faster-whisper model used only for wake detection."
+        icon: "memory"
+        inputType: SettingMeta.SplitButton
+        options: ["tiny.en", "base.en"]
+    }
+
+    property string companionUrl: "https://chatgpt.com/"
+    SettingMeta on companionUrl {
+        label: "Companion ChatGPT URL"
+        description: "Dedicated ChatGPT conversation URL opened/focused after Hey Tabby."
+        icon: "link"
+        inputType: SettingMeta.TextField
+    }
+
+    property bool companionBrowserBridgeEnabled: true
+    SettingMeta on companionBrowserBridgeEnabled {
+        label: "ChatGPT browser bridge"
+        description: "Focus/open the dedicated Zen ChatGPT surface after the wake word."
+        icon: "language"
+        inputType: SettingMeta.Switch
+    }
+
     // Appearance / integration
     property string accentColor: "#B57EDC"
     property bool useCaelestiaColors: true

@@ -13,3 +13,5 @@ psutil
 llama-cpp-python
 groq
 soundfile
+
+mcp>=2.0,<3

@@ -20,6 +20,17 @@
         "deformAmount": 0.03,
         "motionDuration": 180
       }
+    },
+    {
+      "type": "shell-panel",
+      "source": "CompanionPanel.qml",
+      "properties": {
+        "edge": "top",
+        "alignment": "center",
+        "interactive": false,
+        "deformAmount": 0.025,
+        "motionDuration": 180
+      }
     }
   ],
   "settings": "Settings.qml",
