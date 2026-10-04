@@ -524,6 +524,83 @@ ColumnLayout {
         }
     }
 
+    SectionHeader { text: "Hey Tabby / ChatGPT Voice" }
+
+    ToggleRow {
+        first: true
+        text: "Hey Tabby companion"
+        subtext: "Enable the wake-word ChatGPT Voice companion."
+        checked: root.settings?.companionEnabled ?? true
+        onToggled: if (root.settings) root.settings.companionEnabled = checked
+    }
+
+    ToggleRow {
+        text: "Wake word listening"
+        subtext: "Listen for the configured phrase using Protocol7's current STT backend."
+        checked: root.settings?.companionWakeEnabled ?? true
+        onToggled: if (root.settings) root.settings.companionWakeEnabled = checked
+    }
+
+    P7TextFieldRow {
+        label: "Wake phrase"
+        subtext: "Say this phrase to summon Tabby. Example: Hey Tabby"
+        value: root.settings?.companionWakePhrase ?? "Hey Tabby"
+        placeholderText: "Hey Tabby"
+        onEdited: value => {
+            if (root.settings && value.trim().length > 0)
+                root.settings.companionWakePhrase = value.trim();
+        }
+    }
+
+    StepperRow {
+        Layout.fillWidth: true
+        label: "Wake confidence"
+        subtext: "Higher values reduce accidental wake activations."
+        from: 65
+        to: 98
+        stepSize: 1
+        value: root.settings?.companionWakeThreshold ?? 84
+        onMoved: value => { if (root.settings) root.settings.companionWakeThreshold = Math.round(value); }
+    }
+
+    StepperRow {
+        Layout.fillWidth: true
+        label: "Wake cooldown"
+        subtext: "Seconds before the wake phrase can trigger again."
+        from: 1
+        to: 30
+        stepSize: 1
+        value: root.settings?.companionWakeCooldownSeconds ?? 4
+        onMoved: value => { if (root.settings) root.settings.companionWakeCooldownSeconds = Math.round(value); }
+    }
+
+    ToggleRow {
+        text: "Show ChatGPT WebView (Debug)"
+        subtext: "Developer mode: keep Tabby's real ChatGPT WebView visible so login, Voice and permissions can be inspected."
+        checked: root.settings?.companionWebviewDebug ?? false
+        onToggled: if (root.settings) root.settings.companionWebviewDebug = checked
+    }
+
+    StepperRow {
+        Layout.fillWidth: true
+        label: "Tabby auto-hide delay"
+        subtext: "Seconds before Tabby hides when no setup or Voice session is active."
+        from: 2
+        to: 30
+        stepSize: 1
+        value: root.settings?.companionAutoHideSeconds ?? 5
+        onMoved: value => { if (root.settings) root.settings.companionAutoHideSeconds = Math.round(value); }
+    }
+
+    P7TextFieldRow {
+        last: true
+        label: "ChatGPT URL"
+        subtext: "Normally leave this at chatgpt.com."
+        value: root.settings?.companionUrl ?? "https://chatgpt.com/"
+        placeholderText: "https://chatgpt.com/"
+        onEdited: value => { if (root.settings) root.settings.companionUrl = value.trim(); }
+    }
+
     SectionHeader { text: "Appearance & Integration" }
 
     P7TextFieldRow {
