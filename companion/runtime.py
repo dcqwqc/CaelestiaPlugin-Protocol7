@@ -172,7 +172,7 @@ class CompanionRuntime:
                 no_ui_since = time.monotonic()
 
             if phase == "active":
-                # If Voice was explicitly started from the visible WebView,
+                # If Voice was explicitly started from the visible Voice-engine tab,
                 # there is a real live session and Tabby should represent it.
                 self.voice.hide()
                 self._set_listening()

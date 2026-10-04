@@ -71,10 +71,11 @@ All model management is handled seamlessly within the Settings UI:
 MIT License
 
 
-## Hey Tabby companion (V0.2)
+## Hey Tabby companion (V0.3)
 
-Protocol7 wraps the real ChatGPT Voice experience without showing a browser or
-Zen tab. The visible UI is only the small Caelestia companion and its whiteboard.
+Protocol7 wraps the real ChatGPT Voice experience while keeping browser UI out
+of the normal interaction. The visible UI is the small Caelestia companion and
+its whiteboard.
 
 Flow:
 
@@ -82,28 +83,29 @@ Flow:
 "Hey Tabby"
     -> speech-gated wake detector using Protocol7’s configured STT backend/model
     -> companion face appears
-    -> hidden persistent WebKitGTK ChatGPT runtime
-    -> real ChatGPT Voice starts
+    -> hidden dedicated ChatGPT tab inside Zen/Firefox
+    -> privileged local bridge sends a trusted Voice-button click
+    -> real ChatGPT Voice starts through Firefox WebRTC
     -> face stays visible while Voice is active
     -> face disappears again when Voice ends
 ```
 
-The hidden runtime uses its own persistent ChatGPT session under
-`~/.local/share/protocol-7/chatgpt-voice`. It has no address bar, tabs, browser
-chrome, or visible window during normal use. On first use only, if it is not
-authenticated, it may show a small standalone **Tabby — ChatGPT sign in** window.
-After sign-in the runtime returns to hidden operation and reuses the stored session.
+The dedicated Tabby tab uses the user’s normal persistent Zen profile, including
+the existing ChatGPT login session. During normal use the tab is collapsed and
+not selected. The local Sine bridge reads no conversation text; it only exposes
+Voice readiness/active state and accepts activate/end/show/hide commands through
+small JSON command/state files stored inside the Zen profile.
 
-The runtime is controlled only through a mode-0600 Unix socket at
-`$XDG_RUNTIME_DIR/protocol7-chatgpt-voice.sock`. Protocol7 can activate Voice,
-query whether the Voice session is still active, end the session, and show the
-one-time login surface. It does not open or focus Zen.
+WebKitGTK is deliberately not used for Voice. Mirai’s WebKitGTK 2.52.x
+GStreamer WebRTC path crashed during outgoing audio startup. The Zen/Firefox
+engine avoids that media backend while preserving the same Tabby UI and wake
+flow.
 
 ### Companion visibility
 
 The shell panel is fully hidden in `idle`/`asleep`. Saying the wake phrase moves
-it to `wake`, then `listening` once ChatGPT Voice activates. Ending Voice returns
-it to `idle`, which removes the face and all reserved panel space from the shell.
+it to `wake`, then `listening` once ChatGPT Voice is confirmed active. Ending
+Voice returns it to `idle`, which removes the face and all reserved panel space.
 
 ### Whiteboard / MCP
 
@@ -120,22 +122,16 @@ Wake detection deliberately shares Protocol7’s main transcription engine. With
 the current configuration that means Groq + `whisper-large-v3`. Wake requests
 do not fall back to the local `tiny.en` model if Groq fails.
 
-### WebView debug mode
+### Voice engine debug mode
 
-Protocol7 plugin settings include **Show ChatGPT WebView (Debug)**. Turning it
-on starts/reuses the same persistent Tabby ChatGPT runtime and keeps its real
-WebKit view visible so login redirects, Voice controls, permission prompts and
-page state can be inspected directly. Turning it off hides the view again
-without logging out or replacing the persistent ChatGPT session.
-
-The runtime is singleton-locked in `$XDG_RUNTIME_DIR` so stale copies cannot
-race for the Voice IPC socket or produce conflicting authentication/debug state.
+Protocol7 plugin settings include **Show Tabby Voice Engine (Debug)**. Turning
+it on reveals the dedicated Tabby ChatGPT tab in Zen so login, Voice controls,
+permissions, and page state can be inspected directly. Turning it off collapses
+that tab again without logging out or changing the persistent ChatGPT session.
 
 ### Smart companion lifecycle
 
-Tabby dismisses setup and idle states automatically. Closing the one-time
-sign-in surface closes the companion too. A successful first-time sign-in ends
-setup (it does not unexpectedly start Voice); the next `Hey Tabby` starts the
-normal hidden Voice flow. Stalled non-active states auto-hide after the configured grace period (5 seconds
-by default), while real Voice startup and an active Voice session suppress the
-idle timeout.
+Tabby dismisses setup and idle states automatically. Closing the visible setup
+surface closes the companion too. Stalled non-active states auto-hide after the
+configured grace period (5 seconds by default), while real Voice startup and an
+active Voice session suppress the idle timeout.

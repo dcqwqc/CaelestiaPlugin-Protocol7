@@ -139,15 +139,15 @@ SettingsObject {
     property string companionUrl: "https://chatgpt.com/"
     SettingMeta on companionUrl {
         label: "Companion ChatGPT URL"
-        description: "Dedicated ChatGPT conversation URL loaded inside Tabby’s hidden Voice runtime."
+        description: "Dedicated ChatGPT URL used by Tabby’s hidden Zen/Firefox Voice engine."
         icon: "link"
         inputType: SettingMeta.TextField
     }
 
     property bool companionWebviewDebug: false
     SettingMeta on companionWebviewDebug {
-        label: "Show ChatGPT WebView (Debug)"
-        description: "Keep Tabby’s real ChatGPT WebView visible for debugging login, Voice activation and permissions."
+        label: "Show Tabby Voice Engine (Debug)"
+        description: "Reveal Tabby’s dedicated Zen/Firefox ChatGPT tab for debugging login, Voice activation and permissions."
         icon: "bug_report"
         inputType: SettingMeta.Switch
     }

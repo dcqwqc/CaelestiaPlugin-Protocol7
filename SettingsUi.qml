@@ -575,8 +575,8 @@ ColumnLayout {
     }
 
     ToggleRow {
-        text: "Show ChatGPT WebView (Debug)"
-        subtext: "Developer mode: keep Tabby's real ChatGPT WebView visible so login, Voice and permissions can be inspected."
+        text: "Show Tabby Voice Engine (Debug)"
+        subtext: "Developer mode: reveal Tabby's dedicated Zen/Firefox ChatGPT tab so login, Voice and permissions can be inspected."
         checked: root.settings?.companionWebviewDebug ?? false
         onToggled: if (root.settings) root.settings.companionWebviewDebug = checked
     }
