@@ -104,6 +104,14 @@ SettingsObject {
         inputType: SettingMeta.TextField
     }
 
+    property string companionClosePhrase: "Bye Tabby"
+    SettingMeta on companionClosePhrase {
+        label: "Tabby close phrase"
+        description: "Phrase Protocol7 recognizes to end Voice and close Tabby. Leave empty to disable. Example: Bye Tabby"
+        icon: "voice_over_off"
+        inputType: SettingMeta.TextField
+    }
+
     property int companionWakeThreshold: 84
     SettingMeta on companionWakeThreshold {
         label: "Wake confidence"

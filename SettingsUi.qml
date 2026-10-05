@@ -524,11 +524,11 @@ ColumnLayout {
         }
     }
 
-    SectionHeader { text: "Tabby Wake Word" }
+    SectionHeader { text: "Tabby Voice Phrases" }
 
     ToggleRow {
         first: true
-        text: "Wake word listening"
+        text: "Voice phrase listening"
         subtext: "Protocol7 only recognizes the wake phrase; the standalone Tabby plugin owns the assistant UI and ChatGPT session."
         checked: root.settings?.companionWakeEnabled ?? true
         onToggled: if (root.settings) root.settings.companionWakeEnabled = checked
@@ -542,6 +542,17 @@ ColumnLayout {
         onEdited: value => {
             if (root.settings && value.trim().length > 0)
                 root.settings.companionWakePhrase = value.trim();
+        }
+    }
+
+    P7TextFieldRow {
+        label: "Close phrase"
+        subtext: "Say this phrase to end Voice and close Tabby. Example: Bye Tabby. Leave empty to disable."
+        value: root.settings?.companionClosePhrase ?? "Bye Tabby"
+        placeholderText: "Bye Tabby"
+        onEdited: value => {
+            if (root.settings)
+                root.settings.companionClosePhrase = value.trim();
         }
     }
 

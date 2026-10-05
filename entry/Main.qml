@@ -55,6 +55,7 @@ Scope {
             show_tray: settings.showTray,
             companion_wake_enabled: settings.companionWakeEnabled,
             companion_wake_phrase: settings.companionWakePhrase,
+            companion_close_phrase: settings.companionClosePhrase,
             companion_wake_threshold: settings.companionWakeThreshold / 100.0,
             companion_wake_cooldown_seconds: settings.companionWakeCooldownSeconds,
             native_caelestia_ui: true
@@ -220,6 +221,7 @@ Scope {
         function onShowTrayChanged(): void { root.applySettings(true); }
         function onCompanionWakeEnabledChanged(): void { root.applySettings(true); }
         function onCompanionWakePhraseChanged(): void { root.applySettings(true); }
+        function onCompanionClosePhraseChanged(): void { root.applySettings(true); }
         function onCompanionWakeThresholdChanged(): void { root.applySettings(true); }
         function onCompanionWakeCooldownSecondsChanged(): void { root.applySettings(true); }
     }

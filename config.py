@@ -30,6 +30,7 @@ DEFAULT_CONFIG = {
     "show_tray": True,
     "companion_wake_enabled": True,
     "companion_wake_phrase": "Hey Tabby",
+    "companion_close_phrase": "Bye Tabby",
     "companion_wake_threshold": 0.84,
     "companion_wake_cooldown_seconds": 4.0
 }
