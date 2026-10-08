@@ -69,6 +69,30 @@ class WakeWordTests(unittest.TestCase):
         self.assertEqual(text,'Hey Tabby')
         self.assertEqual(backend.calls,[(16000,True,True)])
 
+class LiveNameTests(unittest.TestCase):
+    def test_detector_loads_custom_name_and_aliases(self):
+        from pathlib import Path
+        from companion.wake_word import WakeWordDetector
+        class FakeTranscriber:
+            def transcribe(self, *args, **kwargs):
+                return ""
+        detector=WakeWordDetector({"companion_wake_enabled":True},
+                                 lambda text,score:None,transcriber=FakeTranscriber())
+        with tempfile.TemporaryDirectory() as tmp:
+            identity=Path(tmp)/"config.json"
+            identity.write_text(json.dumps({
+                "assistant_name":"Nova", "wake_phrase":"Hey Lume",
+                "close_phrase":"Bye Lume", "wake_aliases":"Hey Novah",
+                "close_aliases":"Goodbye Nova"}))
+            detector._identity_path=identity
+            detector._identity_mtime_ns=-1
+            detector._refresh_identity(force=True)
+            self.assertEqual(detector.phrase,"Hey Nova")
+            self.assertEqual(detector.close_phrase,"Bye Nova")
+            self.assertEqual(wake_match_score("hey novah",detector.phrase,detector.wake_aliases),1.0)
+            self.assertEqual(close_match_score("goodbye nova",detector.close_phrase,detector.close_aliases),1.0)
+
+
 class CloseGateTests(unittest.TestCase):
     def test_close_is_rejected_while_tabby_is_speaking(self):
         from unittest.mock import patch
