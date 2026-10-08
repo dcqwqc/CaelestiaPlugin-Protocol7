@@ -12,13 +12,22 @@ class WakeWordTests(unittest.TestCase):
         self.assertEqual(normalize_text('Hey, TABBY!'),'hey tabby')
 
     def test_exact_and_alias_match(self):
-        self.assertEqual(wake_match_score('hey tabby'),1.0)
-        self.assertEqual(wake_match_score('Hey Tabi'),1.0)
-        self.assertEqual(wake_match_score('okay hey tabby can you open this'),1.0)
+        self.assertEqual(wake_match_score('hey tabby', 'Hey Tabby'),1.0)
+        self.assertEqual(wake_match_score('Hey Tabi', 'Hey Tabby'),1.0)
+        self.assertEqual(wake_match_score('okay hey tabby can you open this', 'Hey Tabby'),1.0)
+
+    def test_lume_aliases_are_configurable(self):
+        self.assertEqual(wake_match_score("hey loom", "Hey Lume", ["Hey Loom", "Hey Lumi"]), 1.0)
+        self.assertEqual(close_match_score("goodbye lume", "Bye Lume", "Goodbye Lume"), 1.0)
+        self.assertLess(close_match_score("lets say goodbye lume tomorrow", "Bye Lume", "Goodbye Lume"), .92)
+        action, score = companion_phrase_action("hey lumi", "Hey Lume", "Bye Lume",
+            wake_aliases="Hey Lumi", close_aliases="Goodbye Lume")
+        self.assertEqual((action,score), ("wake",1.0))
+        self.assertLess(wake_match_score("hey tabby"), .84)
 
     def test_unrelated_speech_is_rejected(self):
-        self.assertLess(wake_match_score('maybe happy today'),0.84)
-        self.assertLess(wake_match_score('tabby'),0.84)
+        self.assertLess(wake_match_score('maybe happy today', 'Hey Tabby'),0.84)
+        self.assertLess(wake_match_score('tabby', 'Hey Tabby'),0.84)
 
     def test_close_phrase_is_distinct_from_wake(self):
         action,score=companion_phrase_match('Bye Tabby', 'Hey Tabby', 'Bye Tabby')

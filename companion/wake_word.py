@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import json
+from pathlib import Path
 import queue
 import re
 import threading
@@ -17,24 +19,32 @@ def normalize_text(text: str) -> str:
     return " ".join(text.split())
 
 
-def _phrase_aliases(phrase: str) -> set[str]:
+def _phrase_aliases(phrase: str, variants=None) -> set[str]:
     target = normalize_text(phrase)
     aliases = {target} if target else set()
+    if not target:
+        return aliases
     if target == "hey tabby":
-        aliases.update({"hey tabi", "hey tabby", "hey tabbie", "hey tabbyy"})
+        aliases.update({"hey tabi", "hey tabbie", "hey tabbyy"})
     elif target == "bye tabby":
-        aliases.update({"bye tabi", "bye tabby", "bye tabbie", "by tabby", "goodbye tabby"})
+        aliases.update({"bye tabi", "bye tabbie", "by tabby", "goodbye tabby"})
+    if isinstance(variants, str):
+        variants = variants.split(",")
+    for item in (variants or []):
+        alias = normalize_text(item)
+        if alias:
+            aliases.add(alias)
     return aliases
 
 
-def close_match_score(text: str, phrase: str = "Bye Tabby") -> float:
+def close_match_score(text: str, phrase: str = "Bye Lume", aliases=None) -> float:
     """Strict close matcher: the close phrase must be the utterance itself.
 
     Unlike the wake phrase, destructive close matching must never succeed merely
     because an alias appears somewhere inside a longer conversational transcript.
     """
     heard = normalize_text(text)
-    aliases = _phrase_aliases(phrase)
+    aliases = _phrase_aliases(phrase, aliases)
     if not heard or not aliases:
         return 0.0
     if heard in aliases:
@@ -51,12 +61,12 @@ def close_match_score(text: str, phrase: str = "Bye Tabby") -> float:
     return best
 
 
-def wake_match_score(text: str, phrase: str = "Hey Tabby") -> float:
+def wake_match_score(text: str, phrase: str = "Hey Lume", aliases=None) -> float:
     heard = normalize_text(text)
     target = normalize_text(phrase)
     if not heard or not target:
         return 0.0
-    aliases = _phrase_aliases(phrase)
+    aliases = _phrase_aliases(phrase, aliases)
     for alias in aliases:
         if alias in heard:
             return 1.0
@@ -73,12 +83,14 @@ def wake_match_score(text: str, phrase: str = "Hey Tabby") -> float:
 
 def companion_phrase_match(
     text: str,
-    wake_phrase: str = "Hey Tabby",
-    close_phrase: str = "Bye Tabby",
+    wake_phrase: str = "Hey Lume",
+    close_phrase: str = "Bye Lume",
+    wake_aliases=None,
+    close_aliases=None,
 ) -> tuple[str, float]:
     """Return the single best Tabby voice action for a transcript."""
-    wake_score = wake_match_score(text, wake_phrase)
-    close_score = close_match_score(text, close_phrase) if normalize_text(close_phrase) else 0.0
+    wake_score = wake_match_score(text, wake_phrase, wake_aliases)
+    close_score = close_match_score(text, close_phrase, close_aliases) if normalize_text(close_phrase) else 0.0
     if close_score > wake_score:
         return "close", close_score
     return "wake", wake_score
@@ -86,13 +98,15 @@ def companion_phrase_match(
 
 def companion_phrase_action(
     text: str,
-    wake_phrase: str = "Hey Tabby",
-    close_phrase: str = "Bye Tabby",
+    wake_phrase: str = "Hey Lume",
+    close_phrase: str = "Bye Lume",
     companion_active: bool = False,
+    wake_aliases=None,
+    close_aliases=None,
 ) -> tuple[str, float]:
     if companion_active:
-        return "close", close_match_score(text, close_phrase) if normalize_text(close_phrase) else 0.0
-    return companion_phrase_match(text, wake_phrase, close_phrase)
+        return "close", close_match_score(text, close_phrase, close_aliases) if normalize_text(close_phrase) else 0.0
+    return companion_phrase_match(text, wake_phrase, close_phrase, wake_aliases, close_aliases)
 
 
 class WakeWordDetector:
@@ -109,8 +123,14 @@ class WakeWordDetector:
         companion_state: Callable[[], str] | None = None,
     ):
         self.enabled = bool(config.get("companion_wake_enabled", True))
-        self.phrase = str(config.get("companion_wake_phrase", "Hey Tabby")).strip() or "Hey Tabby"
-        self.close_phrase = str(config.get("companion_close_phrase", "Bye Tabby")).strip()
+        self.phrase = str(config.get("companion_wake_phrase", "Hey Lume")).strip() or "Hey Lume"
+        self.close_phrase = str(config.get("companion_close_phrase", "Bye Lume")).strip()
+        self.wake_aliases = []
+        self.close_aliases = []
+        self._identity_path = Path.home()/".config/tabby/config.json"
+        self._identity_mtime_ns = -1
+        self._identity_next_check = 0.0
+        self._refresh_identity(force=True)
         self.threshold = max(0.65, min(0.98, float(config.get("companion_wake_threshold", 0.84))))
         self.close_threshold = max(0.92, self.threshold)
         self.cooldown = max(1.0, min(30.0, float(config.get("companion_wake_cooldown_seconds", 4.0))))
@@ -202,7 +222,7 @@ class WakeWordDetector:
 
             duration = len(active) * 0.1
             # Keep the detector realtime even while ChatGPT is speaking through
-            # the laptop speakers. A short clip is enough for Hey/Bye Tabby and
+            # the laptop speakers. A short clip is enough for Hey/Bye Lume and
             # prevents multi-second assistant-audio backlogs.
             should_finish = speaking and ((silent_chunks >= 4 and speech_chunks >= 3) or duration >= 1.8)
             if not should_finish:
@@ -230,6 +250,42 @@ class WakeWordDetector:
                 except queue.Full:
                     pass
 
+    def _refresh_identity(self, force=False) -> None:
+        # Lume's own plugin settings are the single source of truth. Read only
+        # after file changes; editing the name works without restarting Protocol7.
+        now = time.monotonic()
+        if not force and now < self._identity_next_check:
+            return
+        self._identity_next_check = now + 0.8
+        try:
+            stamp = self._identity_path.stat().st_mtime_ns
+            if stamp == self._identity_mtime_ns:
+                return
+            data = json.loads(self._identity_path.read_text())
+            if not isinstance(data, dict):
+                return
+            name = str(data.get("assistant_name") or "Lume").strip()[:60] or "Lume"
+            wake = str(data.get("wake_phrase") or ("Hey " + name)).strip()
+            close = str(data.get("close_phrase", "Bye " + name)).strip()
+            wake_variants = data.get("wake_aliases", "")
+            close_variants = data.get("close_aliases", "")
+            if name.casefold() != "lume":
+                if wake == "Hey Lume":
+                    wake = "Hey " + name
+                if close == "Bye Lume":
+                    close = "Bye " + name
+                if wake_variants in ("Hey Loom, Hey Lumi, Hey Luma, Hey Lum, Hello Lume", "Hey Loom, Hey Lumi, Hey Luma, Hey Lou, Hello Lume"):
+                    wake_variants = ""
+                if close_variants == "Bye Loom, Bye Lumi, Goodbye Lume, By Lume":
+                    close_variants = ""
+            self.phrase = wake
+            self.close_phrase = close
+            self.wake_aliases = wake_variants
+            self.close_aliases = close_variants
+            self._identity_mtime_ns = stamp
+        except (OSError, ValueError, TypeError):
+            pass
+
     def _transcriber_worker(self) -> None:
         while not self._stop.is_set():
             try:
@@ -239,8 +295,10 @@ class WakeWordDetector:
             try:
                 text = self._transcribe(audio)
                 active_now = bool(self.companion_active())
+                self._refresh_identity()
                 action, score = companion_phrase_action(
-                    text, self.phrase, self.close_phrase, companion_active=active_now
+                    text, self.phrase, self.close_phrase, companion_active=active_now,
+                    wake_aliases=self.wake_aliases, close_aliases=self.close_aliases
                 )
                 now = time.monotonic()
                 threshold = self.close_threshold if action == "close" else self.threshold

@@ -86,28 +86,28 @@ SettingsObject {
     property string llmSystemPrompt: "You are an expert Speech-to-Text editor. Remove filler words and stutters, apply self-corrections, fix obvious transcription errors, add punctuation and capitalization, preserve the speaker's intended meaning and tone, and output only the cleaned text."
 
 
-    // Tabby wake recognition only. The standalone Tabby plugin owns all
+    // Lume wake recognition only. The standalone Lume plugin owns all
     // presentation, ChatGPT/Zen state, input and lifecycle settings.
     property bool companionWakeEnabled: true
     SettingMeta on companionWakeEnabled {
-        label: "Tabby wake word"
-        description: "Listen for Tabby's wake phrase using Protocol7's selected STT backend/model."
+        label: "Lume wake word"
+        description: "Listen for Lume's wake phrase using Protocol7's selected STT backend/model."
         icon: "record_voice_over"
         inputType: SettingMeta.Switch
     }
 
-    property string companionWakePhrase: "Hey Tabby"
+    property string companionWakePhrase: "Hey Lume"
     SettingMeta on companionWakePhrase {
-        label: "Tabby wake phrase"
-        description: "Phrase Protocol7 recognizes before handing control to the standalone Tabby plugin."
+        label: "Lume wake phrase"
+        description: "Phrase Protocol7 recognizes before handing control to the standalone Lume plugin."
         icon: "graphic_eq"
         inputType: SettingMeta.TextField
     }
 
-    property string companionClosePhrase: "Bye Tabby"
+    property string companionClosePhrase: "Bye Lume"
     SettingMeta on companionClosePhrase {
-        label: "Tabby close phrase"
-        description: "Phrase Protocol7 recognizes to end Voice and close Tabby. Leave empty to disable. Example: Bye Tabby"
+        label: "Lume close phrase"
+        description: "Phrase Protocol7 recognizes to end Voice and close Lume. Leave empty to disable. Example: Bye Lume"
         icon: "voice_over_off"
         inputType: SettingMeta.TextField
     }
@@ -115,7 +115,7 @@ SettingsObject {
     property int companionWakeThreshold: 84
     SettingMeta on companionWakeThreshold {
         label: "Wake confidence"
-        description: "Higher values reduce accidental Tabby activations."
+        description: "Higher values reduce accidental Lume activations."
         icon: "tune"
         inputType: SettingMeta.SpinBox
         min: 65
@@ -126,7 +126,7 @@ SettingsObject {
     property int companionWakeCooldownSeconds: 4
     SettingMeta on companionWakeCooldownSeconds {
         label: "Wake cooldown"
-        description: "Minimum seconds before Protocol7 may trigger Tabby again."
+        description: "Minimum seconds before Protocol7 may trigger Lume again."
         icon: "timer"
         inputType: SettingMeta.SpinBox
         min: 1

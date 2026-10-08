@@ -524,38 +524,18 @@ ColumnLayout {
         }
     }
 
-    SectionHeader { text: "Tabby Voice Phrases" }
+    SectionHeader { text: "Lume Voice Recognition" }
 
     ToggleRow {
         first: true
         text: "Voice phrase listening"
-        subtext: "Protocol7 only recognizes the wake phrase; the standalone Tabby plugin owns the assistant UI and ChatGPT session."
+        subtext: "Edit wake, goodbye and pronunciation variants in Lume plugin settings. Protocol7 handles recognition only."
         checked: root.settings?.companionWakeEnabled ?? true
         onToggled: if (root.settings) root.settings.companionWakeEnabled = checked
     }
 
-    P7TextFieldRow {
-        label: "Wake phrase"
-        subtext: "Say this phrase to summon Tabby. Example: Hey Tabby"
-        value: root.settings?.companionWakePhrase ?? "Hey Tabby"
-        placeholderText: "Hey Tabby"
-        onEdited: value => {
-            if (root.settings && value.trim().length > 0)
-                root.settings.companionWakePhrase = value.trim();
-        }
-    }
-
-    P7TextFieldRow {
-        label: "Close phrase"
-        subtext: "Say this phrase to end Voice and close Tabby. Example: Bye Tabby. Leave empty to disable."
-        value: root.settings?.companionClosePhrase ?? "Bye Tabby"
-        placeholderText: "Bye Tabby"
-        onEdited: value => {
-            if (root.settings)
-                root.settings.companionClosePhrase = value.trim();
-        }
-    }
-
+    // Wake, goodbye, and transcription variations are configured centrally
+    // in the Lume plugin. The legacy properties remain for compatibility.
     StepperRow {
         Layout.fillWidth: true
         label: "Wake confidence"
