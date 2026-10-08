@@ -297,8 +297,7 @@ class Protocol7App:
         import json
 
         terminal_markers = (
-            "kitty", "foot", "alacritty", "wezterm", "konsole", "xterm",
-            "ghostty", "org.wezfurlong.wezterm",
+            "ghostty", "foot", "alacritty", "wezterm", "konsole", "xterm", "org.wezfurlong.wezterm",
         )
         try:
             result = subprocess.run(
