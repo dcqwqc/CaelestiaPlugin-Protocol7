@@ -80,7 +80,7 @@ class WakeRuntime:
         # Call Tabby's own CLI/socket control plane directly; Protocol7 still
         # owns no Tabby UI/runtime state.
         try:
-            tabby_ctl = Path.home() / ".local/share/caelestia/plugins/tabby/tabbyctl.py"
+            tabby_ctl = Path.home() / ".local/share/caelestia/plugins/loom/loomctl.py"
             subprocess.Popen(
                 ["/usr/bin/python3", str(tabby_ctl), str(command)],
                 stdin=subprocess.DEVNULL,

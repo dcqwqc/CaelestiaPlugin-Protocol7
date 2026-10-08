@@ -86,28 +86,28 @@ SettingsObject {
     property string llmSystemPrompt: "You are an expert Speech-to-Text editor. Remove filler words and stutters, apply self-corrections, fix obvious transcription errors, add punctuation and capitalization, preserve the speaker's intended meaning and tone, and output only the cleaned text."
 
 
-    // Lume wake recognition only. The standalone Lume plugin owns all
+    // Loom wake recognition only. The standalone Loom plugin owns all
     // presentation, ChatGPT/Zen state, input and lifecycle settings.
     property bool companionWakeEnabled: true
     SettingMeta on companionWakeEnabled {
-        label: "Lume wake word"
-        description: "Listen for Lume's wake phrase using Protocol7's selected STT backend/model."
+        label: "Loom wake word"
+        description: "Listen for Loom's wake phrase using Protocol7's selected STT backend/model."
         icon: "record_voice_over"
         inputType: SettingMeta.Switch
     }
 
-    property string companionWakePhrase: "Hey Lume"
+    property string companionWakePhrase: "Hey Loom"
     SettingMeta on companionWakePhrase {
-        label: "Lume wake phrase"
-        description: "Phrase Protocol7 recognizes before handing control to the standalone Lume plugin."
+        label: "Loom wake phrase"
+        description: "Phrase Protocol7 recognizes before handing control to the standalone Loom plugin."
         icon: "graphic_eq"
         inputType: SettingMeta.TextField
     }
 
-    property string companionClosePhrase: "Bye Lume"
+    property string companionClosePhrase: "Bye Loom"
     SettingMeta on companionClosePhrase {
-        label: "Lume close phrase"
-        description: "Phrase Protocol7 recognizes to end Voice and close Lume. Leave empty to disable. Example: Bye Lume"
+        label: "Loom close phrase"
+        description: "Phrase Protocol7 recognizes to end Voice and close Loom. Leave empty to disable. Example: Bye Loom"
         icon: "voice_over_off"
         inputType: SettingMeta.TextField
     }
@@ -115,7 +115,7 @@ SettingsObject {
     property int companionWakeThreshold: 84
     SettingMeta on companionWakeThreshold {
         label: "Wake confidence"
-        description: "Higher values reduce accidental Lume activations."
+        description: "Higher values reduce accidental Loom activations."
         icon: "tune"
         inputType: SettingMeta.SpinBox
         min: 65
@@ -126,7 +126,7 @@ SettingsObject {
     property int companionWakeCooldownSeconds: 4
     SettingMeta on companionWakeCooldownSeconds {
         label: "Wake cooldown"
-        description: "Minimum seconds before Protocol7 may trigger Lume again."
+        description: "Minimum seconds before Protocol7 may trigger Loom again."
         icon: "timer"
         inputType: SettingMeta.SpinBox
         min: 1

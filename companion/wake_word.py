@@ -37,7 +37,7 @@ def _phrase_aliases(phrase: str, variants=None) -> set[str]:
     return aliases
 
 
-def close_match_score(text: str, phrase: str = "Bye Lume", aliases=None) -> float:
+def close_match_score(text: str, phrase: str = "Bye Loom", aliases=None) -> float:
     """Strict close matcher: the close phrase must be the utterance itself.
 
     Unlike the wake phrase, destructive close matching must never succeed merely
@@ -61,7 +61,7 @@ def close_match_score(text: str, phrase: str = "Bye Lume", aliases=None) -> floa
     return best
 
 
-def wake_match_score(text: str, phrase: str = "Hey Lume", aliases=None) -> float:
+def wake_match_score(text: str, phrase: str = "Hey Loom", aliases=None) -> float:
     heard = normalize_text(text)
     target = normalize_text(phrase)
     if not heard or not target:
@@ -83,8 +83,8 @@ def wake_match_score(text: str, phrase: str = "Hey Lume", aliases=None) -> float
 
 def companion_phrase_match(
     text: str,
-    wake_phrase: str = "Hey Lume",
-    close_phrase: str = "Bye Lume",
+    wake_phrase: str = "Hey Loom",
+    close_phrase: str = "Bye Loom",
     wake_aliases=None,
     close_aliases=None,
 ) -> tuple[str, float]:
@@ -98,8 +98,8 @@ def companion_phrase_match(
 
 def companion_phrase_action(
     text: str,
-    wake_phrase: str = "Hey Lume",
-    close_phrase: str = "Bye Lume",
+    wake_phrase: str = "Hey Loom",
+    close_phrase: str = "Bye Loom",
     companion_active: bool = False,
     wake_aliases=None,
     close_aliases=None,
@@ -123,8 +123,8 @@ class WakeWordDetector:
         companion_state: Callable[[], str] | None = None,
     ):
         self.enabled = bool(config.get("companion_wake_enabled", True))
-        self.phrase = str(config.get("companion_wake_phrase", "Hey Lume")).strip() or "Hey Lume"
-        self.close_phrase = str(config.get("companion_close_phrase", "Bye Lume")).strip()
+        self.phrase = str(config.get("companion_wake_phrase", "Hey Loom")).strip() or "Hey Loom"
+        self.close_phrase = str(config.get("companion_close_phrase", "Bye Loom")).strip()
         self.wake_aliases = []
         self.close_aliases = []
         self._identity_path = Path.home()/".config/tabby/config.json"
@@ -222,7 +222,7 @@ class WakeWordDetector:
 
             duration = len(active) * 0.1
             # Keep the detector realtime even while ChatGPT is speaking through
-            # the laptop speakers. A short clip is enough for Hey/Bye Lume and
+            # the laptop speakers. A short clip is enough for Hey/Bye Loom and
             # prevents multi-second assistant-audio backlogs.
             should_finish = speaking and ((silent_chunks >= 4 and speech_chunks >= 3) or duration >= 1.8)
             if not should_finish:
@@ -251,7 +251,7 @@ class WakeWordDetector:
                     pass
 
     def _refresh_identity(self, force=False) -> None:
-        # Lume's own plugin settings are the single source of truth. Read only
+        # Loom's own plugin settings are the single source of truth. Read only
         # after file changes; editing the name works without restarting Protocol7.
         now = time.monotonic()
         if not force and now < self._identity_next_check:
@@ -264,19 +264,22 @@ class WakeWordDetector:
             data = json.loads(self._identity_path.read_text())
             if not isinstance(data, dict):
                 return
-            name = str(data.get("assistant_name") or "Lume").strip()[:60] or "Lume"
+            name = str(data.get("assistant_name") or "Loom").strip()[:60] or "Loom"
             wake = str(data.get("wake_phrase") or ("Hey " + name)).strip()
             close = str(data.get("close_phrase", "Bye " + name)).strip()
             wake_variants = data.get("wake_aliases", "")
             close_variants = data.get("close_aliases", "")
-            if name.casefold() != "lume":
-                if wake == "Hey Lume":
+            if name.casefold() != "loom":
+                if wake == "Hey Loom":
                     wake = "Hey " + name
-                if close == "Bye Lume":
+                if close == "Bye Loom":
                     close = "Bye " + name
-                if wake_variants in ("Hey Loom, Hey Lumi, Hey Luma, Hey Lum, Hello Lume", "Hey Loom, Hey Lumi, Hey Luma, Hey Lou, Hello Lume"):
+                if wake_variants in ("Hey Lume, Hey Lumi, Hey Lum, Hey Loam, Hello Loom",
+                                       "Hey Loom, Hey Lumi, Hey Luma, Hey Lum, Hello Lume",
+                                       "Hey Loom, Hey Lumi, Hey Luma, Hey Lou, Hello Lume"):
                     wake_variants = ""
-                if close_variants == "Bye Loom, Bye Lumi, Goodbye Lume, By Lume":
+                if close_variants in ("Bye Lume, Bye Lum, Goodbye Loom, By Loom",
+                                     "Bye Loom, Bye Lumi, Goodbye Lume, By Lume"):
                     close_variants = ""
             self.phrase = wake
             self.close_phrase = close

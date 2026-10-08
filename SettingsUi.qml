@@ -524,18 +524,18 @@ ColumnLayout {
         }
     }
 
-    SectionHeader { text: "Lume Voice Recognition" }
+    SectionHeader { text: "Loom Voice Recognition" }
 
     ToggleRow {
         first: true
         text: "Voice phrase listening"
-        subtext: "Edit wake, goodbye and pronunciation variants in Lume plugin settings. Protocol7 handles recognition only."
+        subtext: "Edit wake, goodbye and pronunciation variants in Loom plugin settings. Protocol7 handles recognition only."
         checked: root.settings?.companionWakeEnabled ?? true
         onToggled: if (root.settings) root.settings.companionWakeEnabled = checked
     }
 
     // Wake, goodbye, and transcription variations are configured centrally
-    // in the Lume plugin. The legacy properties remain for compatibility.
+    // in the Loom plugin. The legacy properties remain for compatibility.
     StepperRow {
         Layout.fillWidth: true
         label: "Wake confidence"

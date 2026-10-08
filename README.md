@@ -71,7 +71,7 @@ All model management is handled seamlessly within the Settings UI:
 MIT License
 
 
-## Hey Tabby companion (V0.3)
+## Hey Loom companion (V0.3)
 
 Protocol7 wraps the real ChatGPT Voice experience while keeping browser UI out
 of the normal interaction. The visible UI is the small Caelestia companion and
@@ -80,7 +80,7 @@ its whiteboard.
 Flow:
 
 ```text
-"Hey Tabby"
+"Hey Loom"
     -> speech-gated wake detector using Protocol7’s configured STT backend/model
     -> companion face appears
     -> hidden dedicated ChatGPT tab inside Zen/Firefox
@@ -90,7 +90,7 @@ Flow:
     -> face disappears again when Voice ends
 ```
 
-The dedicated Tabby tab uses the user’s normal persistent Zen profile, including
+The dedicated Loom tab uses the user’s normal persistent Zen profile, including
 the existing ChatGPT login session. During normal use the tab is collapsed and
 not selected. The local Sine bridge reads no conversation text; it only exposes
 Voice readiness/active state and accepts activate/end/show/hide commands through
@@ -98,7 +98,7 @@ small JSON command/state files stored inside the Zen profile.
 
 WebKitGTK is deliberately not used for Voice. Mirai’s WebKitGTK 2.52.x
 GStreamer WebRTC path crashed during outgoing audio startup. The Zen/Firefox
-engine avoids that media backend while preserving the same Tabby UI and wake
+engine avoids that media backend while preserving the same Loom UI and wake
 flow.
 
 ### Companion visibility
@@ -124,14 +124,14 @@ do not fall back to the local `tiny.en` model if Groq fails.
 
 ### Voice engine debug mode
 
-Protocol7 plugin settings include **Show Tabby Voice Engine (Debug)**. Turning
-it on reveals the dedicated Tabby ChatGPT tab in Zen so login, Voice controls,
+Protocol7 plugin settings include **Show Loom Voice Engine (Debug)**. Turning
+it on reveals the dedicated Loom ChatGPT tab in Zen so login, Voice controls,
 permissions, and page state can be inspected directly. Turning it off collapses
 that tab again without logging out or changing the persistent ChatGPT session.
 
 ### Smart companion lifecycle
 
-Tabby dismisses setup and idle states automatically. Closing the visible setup
+Loom dismisses setup and idle states automatically. Closing the visible setup
 surface closes the companion too. Stalled non-active states auto-hide after the
 configured grace period (5 seconds by default), while real Voice startup and an
 active Voice session suppress the idle timeout.

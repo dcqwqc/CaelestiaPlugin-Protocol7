@@ -16,12 +16,12 @@ class WakeWordTests(unittest.TestCase):
         self.assertEqual(wake_match_score('Hey Tabi', 'Hey Tabby'),1.0)
         self.assertEqual(wake_match_score('okay hey tabby can you open this', 'Hey Tabby'),1.0)
 
-    def test_lume_aliases_are_configurable(self):
-        self.assertEqual(wake_match_score("hey loom", "Hey Lume", ["Hey Loom", "Hey Lumi"]), 1.0)
-        self.assertEqual(close_match_score("goodbye lume", "Bye Lume", "Goodbye Lume"), 1.0)
-        self.assertLess(close_match_score("lets say goodbye lume tomorrow", "Bye Lume", "Goodbye Lume"), .92)
-        action, score = companion_phrase_action("hey lumi", "Hey Lume", "Bye Lume",
-            wake_aliases="Hey Lumi", close_aliases="Goodbye Lume")
+    def test_loom_aliases_are_configurable(self):
+        self.assertEqual(wake_match_score("hey lume", "Hey Loom", ["Hey Lume", "Hey Lumi"]), 1.0)
+        self.assertEqual(close_match_score("goodbye loom", "Bye Loom", "Goodbye Loom"), 1.0)
+        self.assertLess(close_match_score("lets say goodbye loom tomorrow", "Bye Loom", "Goodbye Loom"), .92)
+        action, score = companion_phrase_action("hey lumi", "Hey Loom", "Bye Loom",
+            wake_aliases="Hey Lumi", close_aliases="Goodbye Loom")
         self.assertEqual((action,score), ("wake",1.0))
         self.assertLess(wake_match_score("hey tabby"), .84)
 
@@ -81,8 +81,8 @@ class LiveNameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             identity=Path(tmp)/"config.json"
             identity.write_text(json.dumps({
-                "assistant_name":"Nova", "wake_phrase":"Hey Lume",
-                "close_phrase":"Bye Lume", "wake_aliases":"Hey Novah",
+                "assistant_name":"Nova", "wake_phrase":"Hey Loom",
+                "close_phrase":"Bye Loom", "wake_aliases":"Hey Novah",
                 "close_aliases":"Goodbye Nova"}))
             detector._identity_path=identity
             detector._identity_mtime_ns=-1

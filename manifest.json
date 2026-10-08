@@ -4,7 +4,7 @@
   "author": "dcqwqc",
   "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-Protocol7",
   "icon": "mic",
-  "description": "Fast voice dictation with shared Groq/local Whisper, plus Tabby wake-word recognition. The Tabby assistant itself is a separate plugin.",
+  "description": "Fast voice dictation with shared Groq/local Whisper, plus Loom wake-word recognition. The Loom assistant itself is a separate plugin.",
   "entryPoints": [
     {
       "type": "custom",

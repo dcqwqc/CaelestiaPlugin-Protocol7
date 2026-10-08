@@ -29,8 +29,8 @@ DEFAULT_CONFIG = {
     "llm_system_prompt": "You are an STT editor. Remove filler words, fix stutters and self-corrections, correct obvious transcription errors, and add punctuation. Output only the cleaned text.",
     "show_tray": True,
     "companion_wake_enabled": True,
-    "companion_wake_phrase": "Hey Lume",
-    "companion_close_phrase": "Bye Lume",
+    "companion_wake_phrase": "Hey Loom",
+    "companion_close_phrase": "Bye Loom",
     "companion_wake_threshold": 0.84,
     "companion_wake_cooldown_seconds": 4.0
 }
