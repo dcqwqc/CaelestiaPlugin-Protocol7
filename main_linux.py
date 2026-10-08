@@ -313,9 +313,27 @@ class Protocol7App:
         except Exception:
             return False
 
+    def _focused_is_sumi(self):
+        """Use hardware-equivalent key injection for SUMI's embedded editor."""
+        import json
+        try:
+            result = subprocess.run(
+                ["hyprctl", "activewindow", "-j"],
+                capture_output=True, text=True, timeout=0.3, env=_clean_child_env(),
+            )
+            return json.loads(result.stdout or "{}").get("class", "").lower() == "sumi"
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return False
+
     def _active_paste_command(self):
-        """Paste shortcut for ordinary GUI apps only."""
-        return ["wtype", "-M", "ctrl", "v", "-m", "ctrl"]
+        """Use uinput on SUMI; preserve the old wtype path for other GUI apps."""
+        import os
+        import shutil
+        if self._focused_is_sumi() and shutil.which("ydotool"):
+            sock = f"/run/user/{os.getuid()}/.ydotool_socket"
+            if os.path.exists(sock):
+                return ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]
+        return ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
 
     def _fast_clipboard_paste(self, text):
         """Paste a long transcript atomically, then restore the previous clipboard.
@@ -329,7 +347,10 @@ class Protocol7App:
             return False
 
         env = _clean_child_env()
+        import os
+        env["YDOTOOL_SOCKET"] = f"/run/user/{os.getuid()}/.ydotool_socket"
         previous = None
+        copied_ok = False
 
         try:
             types = subprocess.run(
@@ -367,26 +388,29 @@ class Protocol7App:
             )
             if copied.returncode != 0:
                 return False
+            copied_ok = True
 
-            subprocess.run(self._active_paste_command(), check=True, timeout=0.5, env=env)
-
-            # Give the focused client enough time to request the selection before
-            # restoring the user's clipboard. This is still far below the old
-            # multi-second character injection path.
-            import time
-            time.sleep(0.07)
-
-            if previous is not None:
-                mime, data = previous
-                subprocess.run(
-                    ["wl-copy", "--sensitive", "--type", mime],
-                    input=data,
-                    timeout=0.35,
-                    env=env,
-                )
+            # The compositor may accept virtual-keyboard events without delivering
+            # them to SUMI's editor. ydotool uses the already running uinput daemon.
+            subprocess.run(self._active_paste_command(), check=True, timeout=1.0, env=env)
             return True
-        except Exception:
+        except Exception as error:
+            log_debug(f"Clipboard paste failed: {type(error).__name__}")
             return False
+        finally:
+            # Qt/WebKit may fetch Wayland clipboard data asynchronously. Always
+            # restore the existing selection, even if the key injection failed.
+            if copied_ok and previous is not None:
+                import time
+                time.sleep(0.22)
+                mime, data = previous
+                try:
+                    subprocess.run(
+                        ["wl-copy", "--sensitive", "--type", mime],
+                        input=data, timeout=0.5, env=env,
+                    )
+                except Exception:
+                    log_debug("Could not restore previous clipboard selection")
 
     def paste_text(self, text):
         clean = text.replace(chr(13), " ").replace(chr(10), " ")
@@ -394,7 +418,7 @@ class Protocol7App:
             # Preserve the satisfying typing animation for short phrases. For
             # longer dictations use an atomic clipboard paste: this removes the
             # per-character cost that made a ~500-character utterance take ~3s.
-            if len(clean) >= 64 and self._fast_clipboard_paste(clean):
+            if (len(clean) >= 64 or self._focused_is_sumi()) and self._fast_clipboard_paste(clean):
                 return
 
             safe_timeout = max(3.0, min(15.0, len(clean) * 0.02))
