@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "actions": [
+    {"id":"plugin.protocol7.trigger","label":"Toggle Protocol 7 dictation","category":"plugins","icon":"mic","argv":["qs","ipc","--any-display","-c","caelestia","call","protocol7","trigger"]},
+    {"id":"plugin.protocol7.start","label":"Start Protocol 7 dictation","category":"plugins","icon":"mic","argv":["qs","ipc","--any-display","-c","caelestia","call","protocol7","startDictation"]},
+    {"id":"plugin.protocol7.stop","label":"Stop Protocol 7 dictation","category":"plugins","icon":"mic_off","argv":["qs","ipc","--any-display","-c","caelestia","call","protocol7","stopDictation"]}
+  ]
+}

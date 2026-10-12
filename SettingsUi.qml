@@ -20,6 +20,27 @@ ColumnLayout {
     Layout.fillWidth: true
 
     readonly property string pluginRoot: Paths.toLocalFile(Qt.resolvedUrl("."))
+    readonly property string hotkeysCli: Quickshell.env("HOME") + "/.local/share/caelestia/plugins/control/scripts/control.py"
+    property string sharedShortcutLabel: "Not assigned in Hotkeys"
+    Component.onCompleted: if (!sharedShortcutProbe.running) sharedShortcutProbe.running = true
+
+    Process {
+        id: sharedShortcutProbe
+        command: [root.hotkeysCli, "binding-for", "plugin.protocol7.trigger"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    const result = JSON.parse(text);
+                    const current = (result.bindings ?? []).filter(b => b.enabled);
+                    root.sharedShortcutLabel = current.length
+                        ? current.map(b => b.trigger).join(", ")
+                        : "Not assigned in Hotkeys";
+                } catch (e) {
+                    root.sharedShortcutLabel = "Hotkeys registry unavailable";
+                }
+            }
+        }
+    }
 
     property var modelChoices: [
         { label: "tiny.en — fastest, English", value: "tiny.en" },
@@ -307,6 +328,21 @@ ColumnLayout {
                 }
             }
 
+            StyledText {
+                Layout.fillWidth: true
+                text: "Shared Hotkeys: " + root.sharedShortcutLabel +
+                    " · Existing double-key dictation shortcut remains managed by Protocol 7."
+                font: Tokens.font.label.small
+                color: Colours.palette.m3outline
+                wrapMode: Text.WordWrap
+            }
+            IconTextButton {
+                Layout.alignment: Qt.AlignLeft
+                icon: "refresh"
+                text: "Refresh Hotkeys"
+                type: IconTextButton.Text
+                onClicked: if (!sharedShortcutProbe.running) sharedShortcutProbe.running = true
+            }
             IconTextButton {
                 Layout.alignment: Qt.AlignLeft
                 icon: hotkeyCapture.running ? "hearing" : "keyboard"
