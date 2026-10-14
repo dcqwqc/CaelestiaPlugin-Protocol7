@@ -76,6 +76,9 @@ class Protocol7App:
         from llm_rewriter import LLMRewriter
 
         self.whisper_engine = WhisperEngine(self.config)
+        # The always-on wake detector must not share Whisper's mutable model
+        # and inference state with final dictation requests.
+        self.wake_whisper_engine = WhisperEngine({**self.config, "use_groq": False})
         self.llm_rewriter = LLMRewriter(self.config)
         self.tray = TrayIcon(self)
 
@@ -106,13 +109,15 @@ class Protocol7App:
         self.is_active = False
         self.is_processing = False
         self.cancel_requested = False
+        self._dictation_generation = 0
+        self.processing_timeout_seconds = 18.0
         self._live_stop = threading.Event()
         self._live_thread = None
         self._dictation_lock = threading.RLock()
         self.control = ControlServer(self._handle_control_command)
         self.tabby_wake = WakeRuntime(
             self.config,
-            transcriber=self.whisper_engine,
+            transcriber=self.wake_whisper_engine,
             busy=lambda: bool(self.is_active or self.is_processing),
         )
 
@@ -136,15 +141,22 @@ class Protocol7App:
             if self.is_processing:
                 log_debug("Dictation cancelled during processing")
                 self.cancel_requested = True
+                self._dictation_generation += 1
                 self.is_processing = False
                 self.ui_manager.hide()
                 return self._dictation_status()
 
             if not self.is_active:
                 log_debug("Dictation started")
+                self._dictation_generation += 1
                 self.is_active = True
                 self.cancel_requested = False
                 self.audio_recorder.start_recording()
+                if not self.audio_recorder.is_recording:
+                    self.is_active = False
+                    log_debug("Input stream failed to start; aborting recording")
+                    self.ui_manager.hide()
+                    return {"ok": False, "active": False, "processing": False, "error": "microphone unavailable"}
                 self.ui_manager.show()
                 return self._dictation_status()
 
@@ -152,11 +164,30 @@ class Protocol7App:
             self.is_active = False
             self._live_stop.set()
             self.is_processing = True
+            generation = self._dictation_generation
             self.ui_manager.set_processing_state()
 
-            # Transcription and LLM work stay off the trigger thread.
-            threading.Thread(target=self.process_audio, daemon=True).start()
+            # An external request or inference library can occasionally stall.
+            # Never leave the native HUD spinning forever; expired work is
+            # invalidated so it cannot paste into a later dictation session.
+            watchdog = threading.Timer(
+                self.processing_timeout_seconds, self._expire_processing,
+                args=(generation,),
+            )
+            watchdog.daemon = True
+            watchdog.start()
+            threading.Thread(target=self.process_audio, args=(generation,), daemon=True).start()
             return self._dictation_status()
+
+    def _expire_processing(self, generation):
+        with self._dictation_lock:
+            if generation != self._dictation_generation or not self.is_processing:
+                return
+            log_debug(f"Transcription watchdog expired after {self.processing_timeout_seconds:.0f}s")
+            self.cancel_requested = True
+            self._dictation_generation += 1
+            self.is_processing = False
+            self.ui_manager.hide()
 
     def _handle_control_command(self, command):
         if command == "status":
@@ -211,7 +242,7 @@ class Protocol7App:
                     log_debug(f"Live transcription failed: {error}")
             self._live_stop.wait(2.0)
 
-    def process_audio(self):
+    def process_audio(self, generation):
         import time
         import traceback
 
@@ -226,7 +257,11 @@ class Protocol7App:
             )
 
             if len(audio_data) > 0:
+                if generation != self._dictation_generation:
+                    log_debug("Discarding cancelled audio before transcription")
+                    return
                 transcribe_start = time.time()
+                log_debug("Starting final Whisper/Groq transcription")
                 text = self.whisper_engine.transcribe(audio_data)
                 transcribe_end = time.time()
                 log_debug(
@@ -246,8 +281,8 @@ class Protocol7App:
                     if clean_text != text:
                         log_debug(f"Rewritten to: {clean_text}")
 
-                    if self.cancel_requested:
-                        log_debug("Discarding transcription: cancelled by hotkey")
+                    if self.cancel_requested or generation != self._dictation_generation:
+                        log_debug("Discarding transcription: cancelled, timed out, or superseded")
                         return
 
                     # Double-Control is already released by the time final
@@ -282,8 +317,10 @@ class Protocol7App:
             log_debug(f"Fatal error in audio processing pipeline: {error}")
             log_debug(traceback.format_exc())
         finally:
-            self.is_processing = False
-            self.ui_manager.hide()
+            with self._dictation_lock:
+                if generation == self._dictation_generation:
+                    self.is_processing = False
+                    self.ui_manager.hide()
 
     def _focused_is_terminal(self):
         """Return True when the currently focused Hyprland window is a terminal.

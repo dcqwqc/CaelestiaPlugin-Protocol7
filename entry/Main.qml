@@ -170,6 +170,10 @@ Scope {
 
         onExited: {
             P7.ProtocolState.reset();
+            // Recover a crashed backend without restarting the entire shell.
+            // The same debounce timer is reused by deliberate settings restarts.
+            if (root.backendReady)
+                restartTimer.restart();
         }
     }
 

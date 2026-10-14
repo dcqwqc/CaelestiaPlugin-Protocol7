@@ -19,6 +19,7 @@ QtObject {
         try {
             const message = JSON.parse(line.slice(8));
             backendConnected = true;
+            messagesReceived += 1;
             visible = message.visible === true;
             processing = message.processing === true;
             level = Math.max(0, Math.min(1, Number(message.level ?? 0)));
