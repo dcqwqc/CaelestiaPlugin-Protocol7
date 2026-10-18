@@ -227,7 +227,10 @@ class Protocol7App:
         self._live_thread = None
 
     def _live_preview_loop(self):
-        """Publish a best-effort partial transcript every two seconds."""
+        """Publish local partials only in explicit local Whisper mode."""
+        if self.config.get("use_groq", False):
+            # Groq is used for final dictation; do not show tiny.en hallucinations.
+            return
         if self._live_stop.wait(1.2):
             return
 

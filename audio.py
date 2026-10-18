@@ -119,7 +119,15 @@ class AudioRecorder:
             chunks = list(self._recording_chunks)
         if not chunks:
             return np.array([], dtype="float32")
-        return np.concatenate(chunks, axis=0).flatten()
+        audio = np.concatenate(chunks, axis=0).flatten()
+        actual_rate = getattr(self, "actual_sample_rate", self.sample_rate)
+        if actual_rate != self.sample_rate and len(audio) > 1:
+            new_length = max(1, round(len(audio) * self.sample_rate / actual_rate))
+            audio = np.interp(
+                np.linspace(0, len(audio) - 1, new_length),
+                np.arange(len(audio)), audio,
+            ).astype("float32")
+        return audio
     
     def get_volume_level(self):
         return self.volume_level

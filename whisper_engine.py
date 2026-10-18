@@ -36,19 +36,22 @@ class WhisperEngine:
                     if self.groq_client is None or self.current_groq_key != api_key:
                         self.groq_client = Groq(
                             api_key=api_key,
-                            timeout=float(self.config.get("groq_timeout_seconds", 5.0)),
-                            max_retries=0,
+                            timeout=float(self.config.get("groq_timeout_seconds", 15.0)),
+                            max_retries=1,
                         )
                         self.current_groq_key = api_key
                     return
                 except Exception as error:
-                    print(f"Groq client setup failed ({error}); falling back to local Whisper.")
+                    print(f"Groq client setup failed ({type(error).__name__}); cloud transcription unavailable.")
                     self.groq_client = None
                     self.current_groq_key = None
 
-            # Groq can be enabled before a key is entered. In that state (or if
-            # client setup failed), keep dictation functional with the selected
-            # local model instead of leaving self.model as None.
+            # Cloud-selected dictation must never silently use tiny.en on failure.
+            # The local model remains available only when explicitly selected.
+            if use_groq:
+                if not api_key:
+                    print("Groq transcription is enabled but no key is configured.")
+                return
             self._load_local_model_locked()
 
     def transcribe(self, audio_data, live=False, allow_local_fallback=True):
@@ -59,6 +62,10 @@ class WhisperEngine:
         # Partial/live recognition must never compete with the final cloud
         # request. Use the fast local model for live preview and wake-word
         # detection; reserve Groq for the final dictation only.
+        if live and self.config.get("use_groq", False):
+            # Local tiny.en partials are unreliable and can hallucinate numbers.
+            # Prefer no partial over misleading text when cloud STT is enabled.
+            return ""
         if live:
             with self._lock:
                 self._load_local_model_locked()
@@ -69,6 +76,10 @@ class WhisperEngine:
         import time
         t0 = time.time()
         
+        if use_groq and not self.groq_client and not live:
+            print("Groq not initialized; refusing to substitute local Whisper.")
+            return ""
+
         if use_groq and self.groq_client and not live:
             print("Transcribing with Groq API...")
             try:
@@ -81,17 +92,14 @@ class WhisperEngine:
                 transcription = self.groq_client.audio.transcriptions.create(
                     file=("audio.wav", wav_io.read()),
                     model=groq_model,
-                    response_format="json"
+                    response_format="json",
+                    temperature=0.0,
                 )
                 print(f"[Groq Whisper] Internal Transcription took {time.time() - t0:.2f}s")
                 return transcription.text.strip()
             except Exception as e:
-                if not allow_local_fallback:
-                    print(f"Groq API Error: {e}; local fallback disabled for this request.")
-                    return ""
-                print(f"Groq API Error: {e}; falling back to local Whisper.")
-                with self._lock:
-                    self._load_local_model_locked()
+                print(f"Groq transcription failed ({type(e).__name__}); no local substitution.")
+                return ""
         
         # Determine language and task
         language = self.config.get("language", "en")

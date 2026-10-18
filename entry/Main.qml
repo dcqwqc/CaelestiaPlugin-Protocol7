@@ -180,7 +180,7 @@ Scope {
     Process {
         id: stopProc
 
-        command: ["pkill", "-f", "protocol-7.*main.py"]
+        command: ["pkill", "-f", "/plugins/protocol7/main.py"]
         onExited: restartTimer.start()
     }
 
