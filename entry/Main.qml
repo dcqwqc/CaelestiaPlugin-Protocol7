@@ -259,7 +259,9 @@ Scope {
                 `visible=${P7.ProtocolState.visible}`,
                 `processing=${P7.ProtocolState.processing}`,
                 `level=${P7.ProtocolState.level}`,
-                `stateMessages=${P7.ProtocolState.messagesReceived}`
+                `stateMessages=${P7.ProtocolState.messagesReceived}`,
+                `ghostJobs=${P7.ProtocolState.jobs.length}`,
+                `ghostStates=${P7.ProtocolState.jobs.map(j => String(j.status)).join(",")}`
             ].join("
 ");
         }
