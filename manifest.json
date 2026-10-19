@@ -16,7 +16,7 @@
       "properties": {
         "edge": "bottom",
         "alignment": "center",
-        "interactive": false,
+        "interactive": true,
         "deformAmount": 0.03,
         "motionDuration": 180
       }
