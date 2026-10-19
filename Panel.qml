@@ -19,23 +19,41 @@ Item {
     property var historyEntries: []
     property string pendingTimestamp: ""
     property string pasteStatus: ""
+    property string pendingJobId: ""
+    property string pendingJobAction: ""
 
-    readonly property bool panelVisible: P7.ProtocolState.visible
+    readonly property var ghostJob: P7.ProtocolState.jobs.length > 0 ? P7.ProtocolState.jobs[0] : null
+    readonly property bool panelDetached: !P7.ProtocolState.visible && ghostJob !== null
+    readonly property real panelAnchorX: Number(ghostJob?.target?.x ?? NaN)
+    readonly property real panelAnchorY: Number(ghostJob?.target?.y ?? NaN)
+    readonly property string panelMonitorName: String(ghostJob?.target?.monitor ?? "")
+    readonly property bool panelVisible: P7.ProtocolState.visible || ghostJob !== null
     readonly property bool panelInputEnabled: true
     readonly property bool panelTouchTargetEnabled: true
     readonly property bool panelTouchPinned: historyPinned
-    readonly property bool expanded: panelVisible && (panelHostHovered || historyPinned)
+    readonly property bool expanded: panelVisible && !panelDetached && (panelHostHovered || historyPinned)
     readonly property bool panelOverFullscreen: Osk.inset <= 0
     readonly property bool panelLiftShadow: true
     readonly property real panelDeformAmount: 0.03
     readonly property int panelMotionDuration: 180
     readonly property string pasteScript: Paths.toLocalFile(Qt.resolvedUrl("history_actions.py"))
 
-    implicitWidth: expanded ? 382 : 112
-    implicitHeight: expanded ? 360 : 32
+    implicitWidth: panelDetached ? 176 : (expanded ? 382 : 112)
+    implicitHeight: panelDetached ? 36 : (expanded ? 360 : 32)
 
     function dismissTouchPanel(): void {
         historyPinned = false;
+    }
+
+    function activateGhost(): void {
+        if (!ghostJob || ghostCommand.running)
+            return;
+        const status = String(ghostJob.status ?? "");
+        if (status !== "ready" && status !== "error" && status !== "processing" && status !== "queued")
+            return;
+        pendingJobId = String(ghostJob.id);
+        pendingJobAction = status === "ready" ? "insert" : status === "error" ? "retry" : "cancel";
+        ghostCommand.running = true;
     }
 
     function pasteEntry(timestamp: var): void {
@@ -81,6 +99,17 @@ Item {
         repeat: true
         running: root.expanded
         onTriggered: historyFile.reload()
+    }
+
+    Process {
+        id: ghostCommand
+        command: ["python3", Paths.toLocalFile(Qt.resolvedUrl("control_ipc.py")),
+                  root.pendingJobAction, root.pendingJobId]
+        running: false
+        onExited: code => {
+            if (code !== 0)
+                console.warn("Protocol7 Ghost Wave action failed:", root.pendingJobAction);
+        }
     }
 
     Process {
@@ -230,32 +259,39 @@ Item {
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 6
-        width: 112
-        height: 20
+        width: root.panelDetached ? 164 : 112
+        height: 22
 
         TapHandler {
-            onTapped: root.historyPinned = !root.historyPinned
+            onTapped: {
+                if (root.panelDetached)
+                    root.activateGhost();
+                else
+                    root.historyPinned = !root.historyPinned;
+            }
         }
 
         Row {
-            anchors.centerIn: parent
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.leftMargin: root.panelDetached ? 8 : 0
             height: 20
-            spacing: 6
+            spacing: root.panelDetached ? 3 : 6
 
             Repeater {
-                model: 9
+                model: root.panelDetached ? 6 : 9
 
                 Item {
                     required property int index
-                    readonly property real distance: Math.abs(index - 4) / 4
+                    readonly property real distance: Math.abs(index - (root.panelDetached ? 2.5 : 4)) / (root.panelDetached ? 2.5 : 4)
                     readonly property real voiceWeight: Math.max(0.46, 1 - distance * 0.48)
                     readonly property real processingWave: 0.22 + 0.72 * ((Math.sin(root.phase + index * 0.64) + 1) / 2)
                     readonly property real liveTexture: 0.78 + 0.22 * ((Math.sin(root.phase + index * 0.91) + 1) / 2)
                     readonly property real liveLevel: Math.pow(Math.max(0, P7.ProtocolState.level), 0.72)
-                    readonly property real amount: P7.ProtocolState.processing
+                    readonly property real amount: (P7.ProtocolState.processing || root.panelDetached)
                         ? processingWave
                         : Math.max(0.055, Math.min(1, liveLevel * voiceWeight * liveTexture))
-                    width: 4
+                    width: root.panelDetached ? 3 : 4
                     height: 20
 
                     Rectangle {
@@ -272,6 +308,24 @@ Item {
                         }
                     }
                 }
+            }
+        }
+
+        Text {
+            visible: root.panelDetached
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.leftMargin: 53
+            color: Colours.palette.m3onSurface
+            font.pixelSize: 11
+            font.weight: Font.DemiBold
+            text: {
+                const status = String(root.ghostJob?.status ?? "");
+                if (status === "ready") return "Insert here";
+                if (status === "error") return "Retry";
+                if (status === "inserting") return "Inserting…";
+                const extra = Math.max(0, P7.ProtocolState.jobs.length - 1);
+                return extra ? "Processing · +" + extra : "Processing…";
             }
         }
     }

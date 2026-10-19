@@ -18,6 +18,7 @@ class NativeUIBridge:
             "processing": False,
             "level": 0.0,
             "liveText": "",
+            "jobs": [],
         }
 
         self._meter_thread = threading.Thread(
@@ -80,6 +81,11 @@ class NativeUIBridge:
     def set_processing_state(self):
         with self._state_lock:
             self._state.update(visible=True, processing=True, level=0.0)
+        self._publish()
+
+    def set_jobs(self, jobs):
+        with self._state_lock:
+            self._state["jobs"] = list(jobs)
         self._publish()
 
     def set_live_text(self, text):

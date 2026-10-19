@@ -1,0 +1,152 @@
+"""Ghost Wave: detached processing, focus-safe delivery and explicit recovery."""
+import threading
+import tempfile
+from pathlib import Path
+import time
+import unittest
+from unittest.mock import patch
+import numpy as np
+
+from ghost_jobs import GhostJobs
+from control_ipc import valid_command
+from ghost_wave import Target, capture_target
+
+
+class UI:
+    def __init__(self):
+        self.states = []
+    def set_jobs(self, jobs): self.states.append(jobs)
+
+
+class App:
+    def __init__(self, text="test dictation"):
+        self.ui_manager = UI()
+        self.is_active = False
+        self.pasted = []
+        self.whisper_engine = type("Whisper", (), {"transcribe": lambda _, audio: text})()
+        self.llm_rewriter = type("Rewrite", (), {"rewrite": lambda _, result: result})()
+    def paste_text(self, text):
+        self.pasted.append(text)
+        return True
+
+
+def await_status(manager, expected, timeout=2):
+    until = time.monotonic() + timeout
+    while time.monotonic() < until:
+        with manager.lock:
+            if any(job.status == expected for job in manager.jobs.values()):
+                return
+        time.sleep(.01)
+    raise AssertionError(f"job never reached {expected}")
+
+
+class GhostJobsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._home_patcher = patch("ghost_jobs.Path.home", return_value=Path(self._tmp.name))
+        self._home_patcher.start()
+        self.addCleanup(self._home_patcher.stop)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_switching_windows_retains_result_without_injection(self):
+        app = App()
+        manager = GhostJobs(app)
+        target = Target("0x123", "zen", "eDP-1", 110, 220)
+        with patch.object(Target, "same_window_active", return_value=False), patch("ghost_jobs.add_history"):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
+            await_status(manager, "ready")
+            self.assertEqual(app.pasted, [])
+            self.assertEqual(manager.counts()["ready"], 1)
+            self.assertEqual(manager.insert(job.id), {"ok": True, "inserted": True})
+            self.assertEqual(app.pasted, ["test dictation"])
+
+    def test_same_window_autoinserts_once(self):
+        app = App()
+        manager = GhostJobs(app)
+        target = Target("0x123", "zen", "eDP-1", 110, 220)
+        with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
+            await_status(manager, "inserted")
+            self.assertEqual(app.pasted, ["test dictation"])
+            self.assertFalse(manager.insert(job.id)["ok"])
+
+    def test_error_keeps_chip_and_can_retry(self):
+        app = App("")
+        manager = GhostJobs(app)
+        with patch("ghost_jobs.add_history"):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32))
+            await_status(manager, "error")
+            self.assertEqual(manager.snapshot()[0]["status"], "error")
+            app.whisper_engine.transcribe = lambda audio: "recovered"
+            self.assertTrue(manager.retry(job.id)["ok"])
+            await_status(manager, "ready")
+            self.assertEqual(app.pasted, [])
+
+    def test_cancelled_work_never_inserts_late_result(self):
+        app = App()
+        started = threading.Event()
+        go = threading.Event()
+        def slow(audio):
+            started.set()
+            go.wait(2)
+            return "late"
+        app.whisper_engine.transcribe = slow
+        manager = GhostJobs(app)
+        with patch("ghost_jobs.add_history"):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32))
+            self.assertTrue(started.wait(1))
+            self.assertTrue(manager.cancel(job.id)["ok"])
+            go.set()
+            time.sleep(.07)
+            self.assertEqual(app.pasted, [])
+            self.assertEqual(manager.snapshot(), [])
+
+    def test_timeout_never_inserts_late_result(self):
+        app = App()
+        started, release = threading.Event(), threading.Event()
+        def slow(audio):
+            started.set()
+            release.wait(1)
+            return "late text"
+        app.whisper_engine.transcribe = slow
+        manager = GhostJobs(app)
+        manager.job_timeout_seconds = 0.045
+        with patch("ghost_jobs.add_history"):
+            target = Target("0x123", "zen", "eDP-1", 100, 100)
+            with patch.object(Target, "same_window_active", return_value=True):
+                job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
+                self.assertTrue(started.wait(1))
+                await_status(manager, "error")
+                release.set()
+                time.sleep(.1)
+                self.assertEqual(app.pasted, [])
+                self.assertEqual(job.status, "error")
+
+    def test_pending_text_restored_without_stale_window_injection(self):
+        app = App()
+        manager = GhostJobs(app)
+        target = Target("0xABC", "zen", "eDP-1", 200, 250)
+        with patch("ghost_jobs.add_history"), patch.object(Target, "same_window_active", return_value=False):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
+            await_status(manager, "ready")
+            manager._persist()
+        restored = GhostJobs(App())
+        self.assertEqual(restored.snapshot()[0]["status"], "ready")
+        self.assertFalse(restored.jobs[job.id].target.same_window_active())
+        self.assertEqual(restored.jobs[job.id].text, "test dictation")
+
+    def test_ipc_allows_only_bounded_job_actions(self):
+        self.assertTrue(valid_command("insert:012345abcdef"))
+        for bad in ("insert:bad", "insert:012345abcdef;rm", "insert:../../blah", "delete:012345abcdef"):
+            self.assertFalse(valid_command(bad))
+
+    def test_target_coordinates_are_monitor_relative(self):
+        active = {"address": "0x1", "class": "zen", "monitor": 2, "at": [2200, 450], "size": [800, 500]}
+        monitors = [{"id": 2, "name": "DP-2", "x": 1920, "y": 0, "width": 1440, "height": 900}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+            target = capture_target()
+        self.assertEqual((target.monitor, target.x, target.y), ("DP-2", 680, 845))
+
+
+if __name__ == "__main__":
+    unittest.main()

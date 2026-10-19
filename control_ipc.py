@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import threading
 from pathlib import Path
@@ -17,6 +18,11 @@ from typing import Callable
 MAX_COMMAND = 64
 MAX_REPLY = 4096
 COMMANDS = {"toggle", "start", "stop", "status"}
+JOB_COMMAND = re.compile(r"^(insert|cancel|retry):[a-f0-9]{12}$")
+
+
+def valid_command(command: str) -> bool:
+    return command in COMMANDS or bool(JOB_COMMAND.fullmatch(command))
 
 
 def control_socket_path() -> Path:
@@ -73,7 +79,7 @@ class ControlServer:
                         reply = {"ok": False, "error": "invalid command"}
                     else:
                         command = payload.decode("ascii", errors="strict").strip()
-                        if command not in COMMANDS:
+                        if not valid_command(command):
                             reply = {"ok": False, "error": "unsupported command"}
                         else:
                             reply = self.handler(command)
@@ -103,7 +109,7 @@ class ControlServer:
 
 
 def call_control(command: str, timeout: float = 0.5) -> dict:
-    if command not in COMMANDS:
+    if not valid_command(command):
         return {"ok": False, "error": "unsupported command"}
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(timeout)
@@ -124,10 +130,13 @@ def call_control(command: str, timeout: float = 0.5) -> dict:
 def main() -> int:
     import sys
 
-    if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
-        print("usage: control_ipc.py toggle|start|stop|status", file=sys.stderr)
+    command = sys.argv[1] if len(sys.argv) == 2 else (
+        f"{sys.argv[1]}:{sys.argv[2]}" if len(sys.argv) == 3 else ""
+    )
+    if not valid_command(command):
+        print("usage: control_ipc.py toggle|start|stop|status|insert ID|cancel ID|retry ID", file=sys.stderr)
         return 2
-    result = call_control(sys.argv[1])
+    result = call_control(command)
     print(json.dumps(result, separators=(",", ":")))
     return 0 if result.get("ok") else 1
 

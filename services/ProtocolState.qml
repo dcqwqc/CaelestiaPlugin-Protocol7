@@ -10,6 +10,7 @@ QtObject {
     property bool processing: false
     property real level: 0
     property string liveText: ""
+    property var jobs: []
     property int messagesReceived: 0
 
     function applyMessage(line: string): void {
@@ -24,6 +25,7 @@ QtObject {
             processing = message.processing === true;
             level = Math.max(0, Math.min(1, Number(message.level ?? 0)));
             liveText = String(message.liveText ?? "");
+            jobs = Array.isArray(message.jobs) ? message.jobs : [];
         } catch (error) {
             console.warn("Protocol7 state parse failed:", error);
         }
@@ -35,5 +37,6 @@ QtObject {
         processing = false;
         level = 0;
         liveText = "";
+        jobs = [];
     }
 }

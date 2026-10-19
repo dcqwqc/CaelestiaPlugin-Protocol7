@@ -9,6 +9,8 @@ from audio import AudioRecorder
 from native_bridge import NativeUIBridge
 from control_ipc import ControlServer
 from companion.wake_runtime import WakeRuntime
+from ghost_jobs import GhostJobs
+from ghost_wave import capture_target
 
 
 def log_debug(msg):
@@ -114,6 +116,8 @@ class Protocol7App:
         self._live_stop = threading.Event()
         self._live_thread = None
         self._dictation_lock = threading.RLock()
+        self._ghost = GhostJobs(self)
+        self._recording_target = None
         self.control = ControlServer(self._handle_control_command)
         self.tabby_wake = WakeRuntime(
             self.config,
@@ -128,13 +132,49 @@ class Protocol7App:
         )
 
     def _dictation_status(self):
+        counts = self._ghost.counts() if hasattr(self, "_ghost") else {"processing": int(self.is_processing), "ready": 0}
         return {
             "ok": True,
             "active": bool(self.is_active),
-            "processing": bool(self.is_processing),
+            "processing": bool(counts["processing"]),
+            "pending": counts["processing"],
+            "ready": counts["ready"],
         }
 
+    def _toggle_ghost(self, source):
+        # No cloud work happens here. Second Ctrl frees the recording device,
+        # transfers ownership to a detached job and immediately accepts another.
+        with self._dictation_lock:
+            if not self.is_active:
+                self.audio_recorder.start_recording()
+                if not self.audio_recorder.is_recording:
+                    self.ui_manager.hide()
+                    return {"ok": False, "error": "microphone unavailable"}
+                self.is_active = True
+                self.ui_manager.show()
+                self._recording_target = capture_target()
+                log_debug(f"Ghost recording started ({source})")
+                return self._dictation_status()
+
+            self.is_active = False
+            audio = self.audio_recorder.stop_recording()
+            target = self._recording_target
+            self._recording_target = None
+            # Publish the ghost before hiding the bottom recording chip:
+            # ShellPanels can now animate its existing surface toward the
+            # original window rather than flickering off and back on.
+            job = self._ghost.enqueue(audio, target)
+            self.ui_manager.hide()
+            if job is None:
+                # Never discard a full recording silently on queue saturation.
+                log_debug("Ghost queue full: recording could not be submitted")
+                return {"ok": False, "error": "processing queue full"}
+            log_debug(f"Ghost detached job={job.id}")
+            return self._dictation_status()
+
     def _toggle_dictation(self, source="hotkey"):
+        if hasattr(self, "_ghost"):
+            return self._toggle_ghost(source)
         with self._dictation_lock:
             log_debug(f"DICTATION TOGGLE source={source}")
 
@@ -190,6 +230,15 @@ class Protocol7App:
             self.ui_manager.hide()
 
     def _handle_control_command(self, command):
+        if ":" in command and hasattr(self, "_ghost"):
+            action, job_id = command.split(":", 1)
+            if action == "insert":
+                return self._ghost.insert(job_id)
+            if action == "cancel":
+                return self._ghost.cancel(job_id)
+            if action == "retry":
+                return self._ghost.retry(job_id)
+            return {"ok": False, "error": "unsupported action"}
         if command == "status":
             with self._dictation_lock:
                 return self._dictation_status()
@@ -204,7 +253,7 @@ class Protocol7App:
             with self._dictation_lock:
                 if self.is_active:
                     return self._toggle_dictation("control-stop")
-                if self.is_processing:
+                if self.is_processing and not hasattr(self, "_ghost"):
                     return self._toggle_dictation("control-cancel")
                 return self._dictation_status()
         return {"ok": False, "error": "unsupported command"}
@@ -466,7 +515,7 @@ class Protocol7App:
             # SUMI is the only existing exception: its embedded editor needs
             # the hardware-equivalent clipboard paste path.
             if self._focused_is_sumi() and self._fast_clipboard_paste(clean):
-                return
+                return True
 
             safe_timeout = max(8.0, min(90.0, 5.0 + len(clean) * 0.06))
             if len(clean) >= 64:
@@ -478,8 +527,10 @@ class Protocol7App:
                 timeout=safe_timeout,
                 env=_clean_child_env(),
             )
+            return True
         except Exception as error:
             log_debug(f"Error pasting text with wtype: {error}")
+            return False
 
     def run(self):
         log_debug("Starting Protocol-7 native Caelestia backend...")
