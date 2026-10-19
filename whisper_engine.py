@@ -22,7 +22,10 @@ class WhisperEngine:
             print(f"Loading Whisper model: {model_size} (compute_type: {compute_type})...")
             import time
             start_load = time.time()
-            self.model = WhisperModel(model_size, device="auto", compute_type=compute_type)
+            # Keep the always-on wake recognizer lightweight; final dictation uses
+            # cloud STT (or its own selected local model) independently.
+            model_kwargs = {"cpu_threads": int(self.config["cpu_threads"])} if self.config.get("cpu_threads") else {}
+            self.model = WhisperModel(model_size, device="auto", compute_type=compute_type, **model_kwargs)
             self.current_model_size = model_size
             print(f"Model loaded successfully in {time.time() - start_load:.2f}s.")
 

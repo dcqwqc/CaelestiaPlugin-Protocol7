@@ -78,7 +78,7 @@ class Protocol7App:
         self.whisper_engine = WhisperEngine(self.config)
         # The always-on wake detector must not share Whisper's mutable model
         # and inference state with final dictation requests.
-        self.wake_whisper_engine = WhisperEngine({**self.config, "use_groq": False})
+        self.wake_whisper_engine = WhisperEngine({**self.config, "use_groq": False, "cpu_threads": 2})
         self.llm_rewriter = LLMRewriter(self.config)
         self.tray = TrayIcon(self)
 
@@ -492,6 +492,15 @@ class Protocol7App:
             target=self.llm_rewriter.load_model,
             daemon=True,
         ).start()
+        # Loading the wake model on the first spoken phrase made the first
+        # Hey Loom activation unusually slow. Warm it asynchronously now;
+        # UI/control registration below never waits for its completion.
+        if self.tabby_wake.enabled:
+            threading.Thread(
+                target=self.wake_whisper_engine._load_model,
+                name="protocol7-wake-prewarm",
+                daemon=True,
+            ).start()
 
         self.control.start()
         self.tabby_wake.start()

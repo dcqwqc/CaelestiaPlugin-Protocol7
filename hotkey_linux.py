@@ -14,9 +14,9 @@ class HotkeyListener:
         # A sequence tap must be intentional and quick.  We measure between
         # completed taps (key releases), not key-downs, so modifier shortcuts
         # such as Ctrl+C followed by Ctrl+V cannot masquerade as Double Ctrl.
-        self.double_tap_threshold = 0.28  # max seconds between clean taps
-        self.max_tap_duration = 0.25      # a held modifier is not a tap
-        self.min_tap_gap = 0.04           # reject duplicate/echoed events
+        self.double_tap_threshold = 0.46  # allow deliberate double-taps under CPU load
+        self.max_tap_duration = 0.35      # reject held modifiers, allow normal key presses
+        self.min_tap_gap = 0.035          # reject duplicate/echoed events
         # Guards the tap counters. One listener thread runs per input device,
         # and they all share this state -- two devices reporting the same key,
         # or a virtual keyboard echoing it, could otherwise interleave and
