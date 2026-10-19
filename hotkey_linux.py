@@ -4,6 +4,15 @@ import time
 import os
 
 HOTKEY_CAPTURE_FLAG = "/tmp/protocol7_hotkey_capture"
+FOCUS_KEYS = {
+    evdev.ecodes.KEY_TAB, evdev.ecodes.KEY_ENTER,
+    evdev.ecodes.KEY_F6, evdev.ecodes.KEY_ESC,
+    evdev.ecodes.KEY_LEFTALT, evdev.ecodes.KEY_RIGHTALT,
+}
+POINTER_BUTTONS = {
+    evdev.ecodes.BTN_LEFT, evdev.ecodes.BTN_RIGHT,
+    evdev.ecodes.BTN_MIDDLE, evdev.ecodes.BTN_TOUCH,
+}
 
 class HotkeyListener:
     def __init__(self, keycode, on_trigger_callback):
@@ -23,7 +32,9 @@ class HotkeyListener:
         # leave the count somewhere neither tap expected.
         self._tap_lock = __import__('threading').Lock()
         self.tap_count = 0
-        
+        self._focus_count = 0
+        self._focus_lock = threading.Lock()
+
         # For multi-key combos
         self.pressed_keys = set()
         
@@ -39,6 +50,41 @@ class HotkeyListener:
         except OSError:
             pass
         self.on_trigger_callback()
+
+    def focus_epoch(self):
+        """Count user actions likely to relocate the caret, not mouse movement."""
+        with self._focus_lock:
+            return self._focus_count
+
+    def _record_focus_action(self, code, value):
+        if value == 1 and code in (FOCUS_KEYS | POINTER_BUTTONS):
+            with self._focus_lock:
+                self._focus_count += 1
+
+    def find_pointers(self, keyboard_paths=None):
+        keyboards = set(keyboard_paths or [])
+        pointers = []
+        for path in evdev.list_devices():
+            if path in keyboards:
+                continue
+            try:
+                dev = evdev.InputDevice(path)
+                keys = dev.capabilities().get(evdev.ecodes.EV_KEY, [])
+                if any(button in keys for button in POINTER_BUTTONS):
+                    pointers.append(dev)
+            except OSError:
+                continue
+        return pointers
+
+    def _listen_pointer(self, device):
+        try:
+            for event in device.read_loop():
+                if not self.running:
+                    break
+                if event.type == evdev.ecodes.EV_KEY:
+                    self._record_focus_action(event.code, event.value)
+        except OSError:
+            pass
 
     def find_keyboards(self):
         keyboards = []
@@ -66,6 +112,7 @@ class HotkeyListener:
                 if not self.running:
                     break
                 if event.type == evdev.ecodes.EV_KEY:
+                    self._record_focus_action(event.code, event.value)
                     # Update pressed keys state
                     if event.value == 1:
                         self.pressed_keys.add(event.code)
@@ -146,6 +193,7 @@ class HotkeyListener:
 
     def _watchdog(self):
         active_threads = {}
+        pointer_threads = {}
         while self.running:
             try:
                 keyboards = self.find_keyboards()
@@ -157,6 +205,12 @@ class HotkeyListener:
                         t = threading.Thread(target=self._listen_device, args=(kb,), daemon=True)
                         t.start()
                         active_threads[path] = t
+
+                for pointer in self.find_pointers(current_paths):
+                    if pointer.path not in pointer_threads or not pointer_threads[pointer.path].is_alive():
+                        t = threading.Thread(target=self._listen_pointer, args=(pointer,), daemon=True)
+                        t.start()
+                        pointer_threads[pointer.path] = t
             except Exception as e:
                 pass # Prevent any OS/udev race conditions from killing the watchdog
                 

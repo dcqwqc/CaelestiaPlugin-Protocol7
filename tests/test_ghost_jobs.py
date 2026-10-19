@@ -70,6 +70,30 @@ class GhostJobsTests(unittest.TestCase):
             self.assertEqual(app.pasted, ["test dictation"])
             self.assertFalse(manager.insert(job.id)["ok"])
 
+    def test_user_click_prevents_automatic_insertion(self):
+        app = App()
+        event, resume = threading.Event(), threading.Event()
+        class Listener:
+            current = 10
+            def focus_epoch(self): return self.current
+        app.hotkey = Listener()
+        def transcribe(audio):
+            event.set()
+            resume.wait(1)
+            return "safe result"
+        app.whisper_engine.transcribe = transcribe
+        manager = GhostJobs(app)
+        target = Target("0x123", "zen", "eDP-1", 100, 100)
+        with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32), target, focus_epoch=10)
+            self.assertTrue(event.wait(1))
+            app.hotkey.current = 11  # clicked another input within same Zen window
+            resume.set()
+            await_status(manager, "ready")
+            self.assertEqual(app.pasted, [])
+            self.assertFalse(manager.insert(job.id, require_target=True)["ok"])
+            self.assertTrue(manager.insert(job.id)["ok"])
+
     def test_error_keeps_chip_and_can_retry(self):
         app = App("")
         manager = GhostJobs(app)

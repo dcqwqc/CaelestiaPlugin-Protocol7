@@ -163,7 +163,7 @@ class Protocol7App:
             # Publish the ghost before hiding the bottom recording chip:
             # ShellPanels can now animate its existing surface toward the
             # original window rather than flickering off and back on.
-            job = self._ghost.enqueue(audio, target)
+            job = self._ghost.enqueue(audio, target, self.hotkey.focus_epoch())
             self.ui_manager.hide()
             if job is None:
                 # Never discard a full recording silently on queue saturation.

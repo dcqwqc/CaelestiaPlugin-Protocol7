@@ -52,7 +52,8 @@ Item {
         if (status !== "ready" && status !== "error" && status !== "processing" && status !== "queued")
             return;
         pendingJobId = String(ghostJob.id);
-        pendingJobAction = status === "ready" ? "insert" : status === "error" ? "retry" : "cancel";
+        pendingJobAction = status === "ready" ? "insert"
+            : status === "error" && ghostJob.retryable ? "retry" : "cancel";
         ghostCommand.running = true;
     }
 
@@ -322,7 +323,7 @@ Item {
             text: {
                 const status = String(root.ghostJob?.status ?? "");
                 if (status === "ready") return "Insert here";
-                if (status === "error") return "Retry";
+                if (status === "error") return root.ghostJob?.retryable ? "Retry" : "Dismiss";
                 if (status === "inserting") return "Inserting…";
                 const extra = Math.max(0, P7.ProtocolState.jobs.length - 1);
                 return extra ? "Processing · +" + extra : "Processing…";

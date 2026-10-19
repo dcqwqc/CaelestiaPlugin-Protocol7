@@ -30,6 +30,16 @@ class DoubleControlTests(unittest.TestCase):
             listener._listen_device(FakeKeyboard(control_events()))
         self.assertEqual(triggered, [True])
 
+    def test_focus_epoch_changes_for_tab_not_for_control(self):
+        listener = HotkeyListener([29, 29], lambda: None)
+        before = listener.focus_epoch()
+        listener._record_focus_action(ecodes.KEY_LEFTCTRL, 1)
+        self.assertEqual(listener.focus_epoch(), before)
+        listener._record_focus_action(ecodes.KEY_TAB, 1)
+        self.assertEqual(listener.focus_epoch(), before + 1)
+        listener._record_focus_action(ecodes.BTN_LEFT, 1)
+        self.assertEqual(listener.focus_epoch(), before + 2)
+
     def test_held_control_does_not_activate_dictation(self):
         triggered = []
         listener = HotkeyListener([29, 29], lambda: triggered.append(True))

@@ -23,6 +23,7 @@ class GhostJob:
     text: str = ""
     error: str = ""
     cancelled: bool = False
+    focus_epoch: int | None = None
     attempt: int = 0
     created: float = field(default_factory=time.monotonic)
 
@@ -31,6 +32,7 @@ class GhostJob:
             "id": self.id, "status": self.status,
             "target": self.target.as_public() if self.target else {},
             "preview": self.text[:100] if self.status == "ready" else "",
+            "retryable": self.audio is not None and len(self.audio) >= 8000,
         }
 
 
@@ -109,10 +111,10 @@ class GhostJobs:
     def _publish(self):
         self.app.ui_manager.set_jobs(self.snapshot())
 
-    def enqueue(self, audio, target=None):
+    def enqueue(self, audio, target=None, focus_epoch=None):
         with self.lock:
             busy = sum(j.status in ("queued", "processing") for j in self.jobs.values())
-            job = GhostJob(secrets.token_hex(6), target, audio)
+            job = GhostJob(secrets.token_hex(6), target, audio, focus_epoch=focus_epoch)
             if busy >= 4:
                 job.status = "error"
                 job.error = "Too many simultaneous transcriptions; tap to retry"
@@ -169,7 +171,7 @@ class GhostJobs:
             self._persist()
             # Never synthesize a window switch to deliver the result. If the
             # user changed windows, retain a visible ready-to-insert chip.
-            if job.target and not self.app.is_active and job.target.same_window_active():
+            if job.target and self._focus_unchanged(job) and not self.app.is_active and job.target.same_window_active():
                 self.insert(job.id, require_target=True)
         except Exception as exc:
             with self.lock:
@@ -181,6 +183,12 @@ class GhostJobs:
         finally:
             timer.cancel()
 
+    def _focus_unchanged(self, job):
+        listener = getattr(self.app, "hotkey", None)
+        return job.focus_epoch is None or (
+            listener is not None and listener.focus_epoch() == job.focus_epoch
+        )
+
     def insert(self, job_id, *, require_target=False):
         # Serialise complete text injections. A second job can finish while
         # the first is inserting; their keystrokes must never interleave.
@@ -190,7 +198,8 @@ class GhostJobs:
                 if job is None or job.cancelled or job.status != "ready":
                     return {"ok": False, "error": "job not ready"}
                 if require_target and (
-                    self.app.is_active or not job.target or not job.target.same_window_active()
+                    self.app.is_active or not self._focus_unchanged(job)
+                    or not job.target or not job.target.same_window_active()
                 ):
                     return {"ok": False, "error": "target changed"}
                 job.status = "inserting"
@@ -229,7 +238,7 @@ class GhostJobs:
     def retry(self, job_id):
         with self.lock:
             job = self.jobs.get(job_id)
-            if not job or job.cancelled or job.status != "error" or job.audio is None:
+            if not job or job.cancelled or job.status != "error" or job.audio is None or len(job.audio) < 8000:
                 return {"ok": False, "error": "job not retryable"}
             job.status = "queued"
             job.error = ""
