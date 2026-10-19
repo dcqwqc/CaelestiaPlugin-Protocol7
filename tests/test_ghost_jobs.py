@@ -164,12 +164,60 @@ class GhostJobsTests(unittest.TestCase):
         for bad in ("insert:bad", "insert:012345abcdef;rm", "insert:../../blah", "delete:012345abcdef"):
             self.assertFalse(valid_command(bad))
 
+    def test_ready_result_archives_without_losing_history(self):
+        app = App()
+        manager = GhostJobs(app)
+        manager.ready_visible_seconds = 0.07
+        with patch("ghost_jobs.add_history") as saved:
+            job = manager.enqueue(np.ones(16000, dtype=np.float32))
+            await_status(manager, "ready")
+            self.assertEqual(job.text, "test dictation")
+            saved.assert_called_with("test dictation")
+            await_status(manager, "archived")
+            self.assertEqual(manager.snapshot(), [])
+            self.assertEqual(app.pasted, [])
+
+    def test_failed_recording_auto_dismisses(self):
+        app = App("")
+        manager = GhostJobs(app)
+        manager.error_visible_seconds = .06
+        job = manager.enqueue(np.ones(16000, dtype=np.float32))
+        await_status(manager, "error")
+        await_status(manager, "archived")
+        self.assertEqual(manager.snapshot(), [])
+
+    def test_new_processing_job_is_not_hidden_by_old_error(self):
+        app = App("")
+        manager = GhostJobs(app)
+        old = manager.enqueue(np.ones(16000, dtype=np.float32))
+        await_status(manager, "error")
+        hold = threading.Event()
+        entered = threading.Event()
+        def slow(audio):
+            entered.set()
+            hold.wait(1)
+            return "fine"
+        app.whisper_engine.transcribe = slow
+        new = manager.enqueue(np.ones(16000, dtype=np.float32))
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(manager.snapshot()[0]["id"], new.id)
+        hold.set()
+
+    def test_scaled_monitor_coordinates_use_logical_bounds(self):
+        active = {"address": "0x1", "class": "zen", "monitor": 1,
+                  "at": [1500, 250], "size": [650, 800]}
+        monitors = [{"id": 1, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+            target = capture_target()
+        self.assertEqual((target.x, target.y), (1825, 935))
+
     def test_target_coordinates_are_monitor_relative(self):
         active = {"address": "0x1", "class": "zen", "monitor": 2, "at": [2200, 450], "size": [800, 500]}
         monitors = [{"id": 2, "name": "DP-2", "x": 1920, "y": 0, "width": 1440, "height": 900}]
         with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
             target = capture_target()
-        self.assertEqual((target.monitor, target.x, target.y), ("DP-2", 680, 845))
+        self.assertEqual((target.monitor, target.x, target.y), ("DP-2", 680, 835))
 
 
 if __name__ == "__main__":

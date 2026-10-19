@@ -43,6 +43,8 @@ class GhostJobs:
         self._paste_lock = threading.Lock()
         self._persist_lock = threading.Lock()
         self.job_timeout_seconds = 22.0
+        self.ready_visible_seconds = 8.0
+        self.error_visible_seconds = 4.0
         self.jobs = OrderedDict()
         # Single STT worker keeps on-device Whisper and Groq ordering safe,
         # while recording and mouse/keyboard remain completely independent.
@@ -105,8 +107,30 @@ class GhostJobs:
 
     def snapshot(self):
         with self.lock:
-            return [job.public() for job in self.jobs.values()
-                    if job.status not in ("inserted", "cancelled")]
+            active = [job for job in self.jobs.values()
+                      if job.status not in ("inserted", "cancelled", "archived")]
+            # Never let an older retry/ready pill hide a newly active job.
+            priority = {"processing": 0, "queued": 0, "inserting": 1,
+                        "ready": 2, "error": 3}
+            active.sort(key=lambda j: (priority.get(j.status, 4), -j.created))
+            return [job.public() for job in active]
+
+    def _archive_after(self, job_id, expected_status, duration):
+        timer = threading.Timer(duration, self._archive_if_still, args=(job_id, expected_status))
+        timer.daemon = True
+        timer.start()
+
+    def _archive_if_still(self, job_id, expected_status):
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None or job.status != expected_status:
+                return
+            # Ready text was already added to transcription history and is
+            # recoverable there; hide the floating chip instead of pinning it.
+            job.status = "archived"
+            job.audio = None
+        self._publish()
+        self._persist()
 
     def _publish(self):
         self.app.ui_manager.set_jobs(self.snapshot())
@@ -117,7 +141,7 @@ class GhostJobs:
             job = GhostJob(secrets.token_hex(6), target, audio, focus_epoch=focus_epoch)
             if busy >= 4:
                 job.status = "error"
-                job.error = "Too many simultaneous transcriptions; tap to retry"
+                job.error = "Busy processing other recordings"
             self.jobs[job.id] = job
             # Do not keep entire audio arrays indefinitely after completion.
             while len(self.jobs) > 16:
@@ -128,6 +152,8 @@ class GhostJobs:
         self._publish()
         if job.status == "queued":
             self.executor.submit(self._run, job)
+        else:
+            self._archive_after(job.id, "error", self.error_visible_seconds)
         return job
 
     def _expire(self, job_id, attempt):
@@ -138,6 +164,7 @@ class GhostJobs:
             job.status = "error"
             job.error = "Transcription timed out; tap to retry"
         self._publish()
+        self._archive_after(job.id, "error", self.error_visible_seconds)
 
     def _run(self, job):
         with self.lock:
@@ -169,6 +196,7 @@ class GhostJobs:
                 add_history(job.text)
             self._publish()
             self._persist()
+            self._archive_after(job.id, "ready", self.ready_visible_seconds)
             # Never synthesize a window switch to deliver the result. If the
             # user changed windows, retain a visible ready-to-insert chip.
             if job.target and self._focus_unchanged(job) and not self.app.is_active and job.target.same_window_active():
@@ -180,6 +208,7 @@ class GhostJobs:
                 job.status = "error"
                 job.error = str(exc)[:180]
             self._publish()
+            self._archive_after(job.id, "error", self.error_visible_seconds)
         finally:
             timer.cancel()
 

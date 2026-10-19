@@ -63,9 +63,17 @@ def capture_target() -> Optional[Target]:
     # Approximate textbox location for generic apps: lower-midpoint.
     # The backend NEVER claims that this is the precise caret.
     x = int(location[0]) - int(monitor.get("x", 0)) + max(0, int(size[0]) // 2)
-    y = int(location[1]) - int(monitor.get("y", 0)) + max(0, int(size[1]) - 80)
-    width = int(monitor.get("width", 1920))
-    height = int(monitor.get("height", 1080))
+    # Sit just above the typical bottom input row rather than covering it.
+    y = int(location[1]) - int(monitor.get("y", 0)) + max(0, int(size[1]) - 115)
+    # Hyprland monitor dimensions are physical pixels, while window
+    # coordinates and QML surface dimensions are compositor-logical pixels.
+    # Not dividing by scale created visibly displaced/clamped bubbles.
+    try:
+        scale = max(0.25, float(monitor.get("scale", 1)))
+    except (ValueError, TypeError):
+        scale = 1.0
+    width = int(monitor.get("width", 1920) / scale)
+    height = int(monitor.get("height", 1080) / scale)
     return Target(
         address=str(active["address"]), app=str(active.get("class") or ""),
         monitor=str(monitor.get("name") or ""),

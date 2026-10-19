@@ -29,8 +29,8 @@ Item {
     readonly property string panelMonitorName: String(ghostJob?.target?.monitor ?? "")
     readonly property bool panelVisible: P7.ProtocolState.visible || ghostJob !== null
     readonly property bool panelInputEnabled: true
-    readonly property bool panelTouchTargetEnabled: true
-    readonly property bool panelTouchPinned: historyPinned
+    readonly property bool panelTouchTargetEnabled: !panelDetached
+    readonly property bool panelTouchPinned: historyPinned && !panelDetached
     readonly property bool expanded: panelVisible && !panelDetached && (panelHostHovered || historyPinned)
     readonly property bool panelOverFullscreen: Osk.inset <= 0
     readonly property bool panelLiftShadow: true
@@ -38,8 +38,10 @@ Item {
     readonly property int panelMotionDuration: 180
     readonly property string pasteScript: Paths.toLocalFile(Qt.resolvedUrl("history_actions.py"))
 
-    implicitWidth: panelDetached ? 176 : (expanded ? 382 : 112)
-    implicitHeight: panelDetached ? 36 : (expanded ? 360 : 32)
+    // Keep the detached surface stable on hover. Changing its footprint
+    // while the pointer is over it used to cause drifting hit targets.
+    implicitWidth: panelDetached ? 232 : (expanded ? 382 : 112)
+    implicitHeight: panelDetached ? 44 : (expanded ? 360 : 32)
 
     function dismissTouchPanel(): void {
         historyPinned = false;
@@ -49,7 +51,8 @@ Item {
         if (!ghostJob || ghostCommand.running)
             return;
         const status = String(ghostJob.status ?? "");
-        if (status !== "ready" && status !== "error" && status !== "processing" && status !== "queued")
+        // Do not cancel an active transcription just by tapping its wave.
+        if (status !== "ready" && status !== "error")
             return;
         pendingJobId = String(ghostJob.id);
         pendingJobAction = status === "ready" ? "insert"
@@ -259,9 +262,9 @@ Item {
         id: waveRow
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: 6
-        width: root.panelDetached ? 164 : 112
-        height: 22
+        anchors.bottomMargin: root.panelDetached ? 9 : 6
+        width: root.panelDetached ? 220 : 112
+        height: root.panelDetached ? 26 : 20
 
         TapHandler {
             onTapped: {
@@ -274,13 +277,14 @@ Item {
 
         Row {
             anchors.verticalCenter: parent.verticalCenter
-            anchors.left: parent.left
-            anchors.leftMargin: root.panelDetached ? 8 : 0
-            height: 20
-            spacing: root.panelDetached ? 3 : 6
+            // Previously the recording wave was left-aligned 14px off-centre.
+            // Detached mode uses the same full-size bars at a fixed left inset.
+            x: root.panelDetached ? 12 : (parent.width - width) / 2
+            height: parent.height
+            spacing: root.panelDetached ? 4 : 6
 
             Repeater {
-                model: root.panelDetached ? 6 : 9
+                model: 9
 
                 Item {
                     required property int index
@@ -292,17 +296,17 @@ Item {
                     readonly property real amount: (P7.ProtocolState.processing || root.panelDetached)
                         ? processingWave
                         : Math.max(0.055, Math.min(1, liveLevel * voiceWeight * liveTexture))
-                    width: root.panelDetached ? 3 : 4
-                    height: 20
+                    width: 4
+                    height: waveRow.height
 
                     Rectangle {
                         width: parent.width
-                        height: 3 + parent.amount * 17
+                        height: 3 + parent.amount * (parent.height - 3)
                         x: 0
                         y: parent.height - height
                         radius: 2
                         color: Colours.palette.m3primary
-                        opacity: 0.9
+                        opacity: root.panelDetached && root.panelHostHovered ? 1 : 0.9
 
                         Behavior on height {
                             NumberAnimation { duration: 26; easing.type: Easing.OutQuad }
@@ -316,17 +320,18 @@ Item {
             visible: root.panelDetached
             anchors.verticalCenter: parent.verticalCenter
             anchors.left: parent.left
-            anchors.leftMargin: 53
-            color: Colours.palette.m3onSurface
-            font.pixelSize: 11
+            anchors.leftMargin: 106
+            color: root.panelHostHovered && String(root.ghostJob?.status ?? "") === "ready"
+                ? Colours.palette.m3primary : Colours.palette.m3onSurface
+            font.pixelSize: 12
             font.weight: Font.DemiBold
             text: {
                 const status = String(root.ghostJob?.status ?? "");
-                if (status === "ready") return "Insert here";
-                if (status === "error") return root.ghostJob?.retryable ? "Retry" : "Dismiss";
+                if (status === "ready") return root.panelHostHovered ? "Click to insert" : "Text ready";
+                if (status === "error") return root.panelHostHovered && root.ghostJob?.retryable ? "Tap to retry" : "Couldn't hear that";
                 if (status === "inserting") return "Inserting…";
                 const extra = Math.max(0, P7.ProtocolState.jobs.length - 1);
-                return extra ? "Processing · +" + extra : "Processing…";
+                return extra ? "Transcribing + " + extra : "Transcribing…";
             }
         }
     }

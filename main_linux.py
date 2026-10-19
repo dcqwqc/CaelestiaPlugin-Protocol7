@@ -163,6 +163,12 @@ class Protocol7App:
             # Publish the ghost before hiding the bottom recording chip:
             # ShellPanels can now animate its existing surface toward the
             # original window rather than flickering off and back on.
+            if len(audio) < 8000:
+                # A quick accidental toggle must not leave a permanent Retry
+                # ghost floating beside the last application.
+                self.ui_manager.hide()
+                log_debug("Ghost recording too short; closed without creating a job")
+                return self._dictation_status()
             job = self._ghost.enqueue(audio, target, self.hotkey.focus_epoch())
             self.ui_manager.hide()
             if job is None:
