@@ -177,6 +177,18 @@ class GhostJobsTests(unittest.TestCase):
             self.assertEqual(manager.snapshot(), [])
             self.assertEqual(app.pasted, [])
 
+    def test_restored_result_schedules_auto_hide(self):
+        app = App()
+        manager = GhostJobs(app)
+        with patch("ghost_jobs.add_history"):
+            job = manager.enqueue(np.ones(16000, dtype=np.float32))
+            await_status(manager, "ready")
+            manager._persist()
+        with patch.object(GhostJobs, "_archive_after") as schedule:
+            restored = GhostJobs(App())
+            self.assertEqual(restored.snapshot()[0]["id"], job.id)
+            schedule.assert_called_once_with(job.id, "ready", restored.ready_visible_seconds)
+
     def test_failed_recording_auto_dismisses(self):
         app = App("")
         manager = GhostJobs(app)

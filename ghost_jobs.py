@@ -51,6 +51,10 @@ class GhostJobs:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="protocol7-ghost")
         self.state_path = Path.home() / ".local/state/protocol-7/ghost-jobs.json"
         self._restore()
+        # A recovered result must be discoverable briefly, not become a
+        # permanent floating chip after a plugin/shell restart.
+        for recovered in tuple(self.jobs.values()):
+            self._archive_after(recovered.id, "ready", self.ready_visible_seconds)
         self._publish()
 
     def _restore(self):
