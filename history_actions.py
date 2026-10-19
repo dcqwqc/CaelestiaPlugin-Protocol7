@@ -59,11 +59,22 @@ def is_terminal() -> bool:
         return False
 
 
+def focused_is_sumi() -> bool:
+    try:
+        p = subprocess.run(
+            ["hyprctl", "activewindow", "-j"], capture_output=True, text=True,
+            timeout=0.4, env=child_env(),
+        )
+        return str(json.loads(p.stdout or "{}").get("class", "")).lower() == "sumi"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
 def type_text(text: str) -> bool:
     try:
         subprocess.run(
             ["wtype", "--", text], check=True,
-            timeout=max(3, min(18, len(text) * 0.025)),
+            timeout=max(8, min(90, 5 + len(text) * 0.06)),
             env=child_env(),
         )
         return True
@@ -127,8 +138,10 @@ def paste_timestamp(timestamp: str, path: Path = HISTORY_PATH) -> bool:
     text = selected_text(timestamp, path).replace("\r", " ").replace("\n", " ")
     if not text.strip():
         return False
-    # Ctrl+V is not the expected input in a terminal; avoid control-key combos.
-    if len(text) >= 64 and not is_terminal() and clipboard_paste(text):
+    # Never race Codex or another asynchronous paste consumer by swapping the
+    # clipboard back to its previous content (which may be an image).
+    # The SUMI editor is the one known exception that requires Ctrl+V.
+    if focused_is_sumi() and clipboard_paste(text):
         return True
     return type_text(text)
 

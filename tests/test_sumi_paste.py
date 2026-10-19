@@ -18,6 +18,14 @@ class SumiPasteTests(unittest.TestCase):
             self.assertEqual(self.app._active_paste_command(),
                              ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"])
 
+    def test_long_codex_transcription_never_uses_clipboard(self):
+        long_text = "A detailed Codex prompt that is long enough to trigger " * 12
+        with patch.object(Protocol7App, "_focused_is_sumi", return_value=False),              patch.object(Protocol7App, "_fast_clipboard_paste") as clipboard,              patch("main_linux.subprocess.run") as run:
+            self.app.paste_text(long_text)
+            clipboard.assert_not_called()
+            self.assertEqual(run.call_args.args[0], ["wtype", "--", long_text])
+            self.assertGreaterEqual(run.call_args.kwargs["timeout"], 8)
+
     def test_short_sumi_transcription_uses_clipboard(self):
         with patch.object(Protocol7App, "_focused_is_sumi", return_value=True),              patch.object(Protocol7App, "_fast_clipboard_paste", return_value=True) as paste:
             self.app.paste_text("short")

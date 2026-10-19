@@ -26,13 +26,14 @@ def test_paste_short_text_does_not_touch_clipboard(tmp_path: Path):
         copied.assert_not_called()
 
 
-def test_paste_long_text_uses_restore_path(tmp_path: Path):
+def test_long_codex_text_avoids_image_clipboard_race(tmp_path: Path):
     path = tmp_path / "history.json"
     message = "example " * 20
     path.write_text(json.dumps([{"timestamp":123,"text":message}]))
-    with patch("history_actions.is_terminal", return_value=False), patch("history_actions.clipboard_paste", return_value=True) as copied:
+    with patch("history_actions.focused_is_sumi", return_value=False), patch("history_actions.clipboard_paste") as copied, patch("history_actions.type_text", return_value=True) as typed:
         assert paste_timestamp("123", path)
-        copied.assert_called_once_with(message)
+        copied.assert_not_called()
+        typed.assert_called_once_with(message)
 
 
 def test_untrusted_or_missing_entry_fails_closed(tmp_path: Path):
@@ -41,3 +42,13 @@ def test_untrusted_or_missing_entry_fails_closed(tmp_path: Path):
     with patch("history_actions.type_text") as typed:
         assert not paste_timestamp("123", path)
         typed.assert_not_called()
+
+
+
+def test_sumi_remains_compatible_with_clipboard_paste(tmp_path: Path):
+    path = tmp_path / "history.json"
+    message = "Sumi entry " * 20
+    path.write_text(json.dumps([{"timestamp": 123, "text": message}]))
+    with patch("history_actions.focused_is_sumi", return_value=True), patch("history_actions.clipboard_paste", return_value=True) as copied:
+        assert paste_timestamp("123", path)
+        copied.assert_called_once_with(message)

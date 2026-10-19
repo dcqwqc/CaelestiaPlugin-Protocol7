@@ -458,12 +458,19 @@ class Protocol7App:
             # Preserve the satisfying typing animation for short phrases. For
             # longer dictations use an atomic clipboard paste: this removes the
             # per-character cost that made a ~500-character utterance take ~3s.
-            if (len(clean) >= 64 or self._focused_is_sumi()) and self._fast_clipboard_paste(clean):
+            # A text editor (including Codex/Claude frontends) may fetch the
+            # clipboard after Ctrl+V returns. Restoring an earlier image can
+            # therefore turn a long dictation into an "image paste" attempt.
+            # Inject literal characters for every normal app and terminal:
+            # never touch the clipboard, regardless of transcription length.
+            # SUMI is the only existing exception: its embedded editor needs
+            # the hardware-equivalent clipboard paste path.
+            if self._focused_is_sumi() and self._fast_clipboard_paste(clean):
                 return
 
-            safe_timeout = max(3.0, min(15.0, len(clean) * 0.02))
-            if len(clean) >= 64 and self._focused_is_terminal():
-                log_debug("Safe terminal output: plain wtype (no synthetic modifiers)")
+            safe_timeout = max(8.0, min(90.0, 5.0 + len(clean) * 0.06))
+            if len(clean) >= 64:
+                log_debug("Literal text injection (no clipboard or Ctrl+V)")
 
             subprocess.run(
                 ["wtype", "--", clean],
