@@ -10,7 +10,7 @@ from native_bridge import NativeUIBridge
 from control_ipc import ControlServer
 from companion.wake_runtime import WakeRuntime
 from ghost_jobs import GhostJobs
-from ghost_wave import capture_target
+from ghost_wave import capture_target, hypr_json
 
 
 def log_debug(msg):
@@ -146,13 +146,16 @@ class Protocol7App:
         # transfers ownership to a detached job and immediately accepts another.
         with self._dictation_lock:
             if not self.is_active:
+                # Capture the pointer at the hotkey press, before recorder
+                # setup/UI rendering can shift timing or the user moves away.
+                pointer_at_press = hypr_json("cursorpos")
                 self.audio_recorder.start_recording()
                 if not self.audio_recorder.is_recording:
                     self.ui_manager.hide()
                     return {"ok": False, "error": "microphone unavailable"}
                 self.is_active = True
                 self.ui_manager.show()
-                self._recording_target = capture_target()
+                self._recording_target = capture_target(pointer_at_press)
                 log_debug(f"Ghost recording started ({source})")
                 return self._dictation_status()
 

@@ -174,6 +174,7 @@ class GhostJobsTests(unittest.TestCase):
             self.assertEqual(job.text, "test dictation")
             saved.assert_called_with("test dictation")
             await_status(manager, "archived")
+            manager._persist()  # wait for archive's asynchronous disk write
             self.assertEqual(manager.snapshot(), [])
             self.assertEqual(app.pasted, [])
 
@@ -196,6 +197,7 @@ class GhostJobsTests(unittest.TestCase):
         job = manager.enqueue(np.ones(16000, dtype=np.float32))
         await_status(manager, "error")
         await_status(manager, "archived")
+        manager._persist()  # wait for the archive write
         self.assertEqual(manager.snapshot(), [])
 
     def test_new_processing_job_is_not_hidden_by_old_error(self):
@@ -220,16 +222,49 @@ class GhostJobsTests(unittest.TestCase):
                   "at": [1500, 250], "size": [650, 800]}
         monitors = [{"id": 1, "name": "eDP-1", "x": 0, "y": 0,
                      "width": 2880, "height": 1800, "scale": 1.5}]
-        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 1527, "y": 400}]):
             target = capture_target()
-        self.assertEqual((target.x, target.y), (1825, 935))
+        self.assertEqual((target.x, target.y), (1527, 364))
+
+    def test_pointer_monitor_wins_over_active_window(self):
+        active = {"address": "0xab", "class": "zen", "monitor": 0,
+                  "at": [100, 20], "size": [700, 850]}
+        monitors = [
+            {"id": 0, "name": "eDP-1", "x": 0, "y": 0, "width": 2880, "height": 1800, "scale": 1.5},
+            {"id": 1, "name": "DP-2", "x": 1920, "y": 0, "width": 1920, "height": 1080, "scale": 2.0},
+        ]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 2340, "y": 480}]):
+            target = capture_target()
+        self.assertEqual((target.monitor, target.x, target.y), ("DP-2", 420, 444))
+        self.assertEqual((target.address, target.app), ("0xab", "zen"))
+
+    def test_hotkey_pointer_snapshot_is_kept_even_if_cursor_moves(self):
+        active = {"address": "0xab", "class": "zen", "monitor": 0, "at": [20, 20], "size": [500, 500]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+            target = capture_target({"x": 250, "y": 570})
+        self.assertEqual((target.x, target.y), (250, 534))
+
+    def test_anchor_does_not_follow_mouse_after_capture(self):
+        active = {"address": "0xab", "class": "zen", "monitor": 0, "at": [20, 20], "size": [500, 500]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 320, "y": 540}]):
+            target = capture_target()
+        self.assertEqual((target.x, target.y), (320, 504))
+
+    def test_absent_cursor_falls_back_to_window(self):
+        active = {"address": "0xab", "class": "zen", "monitor": 0, "at": [100, 100], "size": [600, 700]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {}]):
+            target = capture_target()
+        self.assertEqual((target.x, target.y), (400, 414))
 
     def test_target_coordinates_are_monitor_relative(self):
         active = {"address": "0x1", "class": "zen", "monitor": 2, "at": [2200, 450], "size": [800, 500]}
         monitors = [{"id": 2, "name": "DP-2", "x": 1920, "y": 0, "width": 1440, "height": 900}]
-        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 2200, "y": 450}]):
             target = capture_target()
-        self.assertEqual((target.monitor, target.x, target.y), ("DP-2", 680, 835))
+        self.assertEqual((target.monitor, target.x, target.y), ("DP-2", 280, 414))
 
 
 if __name__ == "__main__":
