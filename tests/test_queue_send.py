@@ -89,23 +89,29 @@ class QueueSendTests(unittest.TestCase):
             self.assertFalse(self.app.enter_interceptor.armed)
 
     def test_other_pending_job_cannot_recapture_synthetic_enter(self):
+        first_started, first_release = threading.Event(), threading.Event()
         processing, release = threading.Event(), threading.Event()
         calls = [0]
         def transcribe(_):
             calls[0] += 1
-            if calls[0] == 2:
+            if calls[0] == 1:
+                first_started.set()
+                first_release.wait(3)
+            else:
                 processing.set()
-                release.wait(2)
+                release.wait(3)
             return "text"
         self.app.whisper_engine.transcribe = transcribe
         with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
             first = self.manager.enqueue(np.ones(16000, dtype=np.float32), self.target, 10, 3)
+            self.assertTrue(first_started.wait(1))
             self.app.hotkey.count += 1
-            self.manager.queue_send()
-            # Another job is allowed while the first is inserting.
+            self.assertTrue(self.manager.queue_send()["send_queued"])
+            # Keep a second transcription processing during the first Send.
             second = self.manager.enqueue(np.ones(16000, dtype=np.float32), self.target, 11, 3)
             self.assertTrue(processing.wait(2))
-            until(lambda: first.status == "inserted")
+            first_release.set()
+            until(lambda: first.status == "inserted", timeout=4)
             until(lambda: bool(self.app.sends))
             self.assertEqual(self.app.sends[0][2], False)
             self.assertTrue(self.app.enter_interceptor.armed)

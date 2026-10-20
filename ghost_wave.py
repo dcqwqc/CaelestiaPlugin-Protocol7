@@ -123,6 +123,33 @@ def anchor_by_field_edge(
     return round(cx - monitor_x), round(cy - monitor_y)
 
 
+def chatgpt_split_composer(active: dict, monitor: dict) -> tuple[int, int] | None:
+    """Fallback for ChatGPT's two-pane desktop UI when AT-SPI/grim fail.
+
+    Derived from measured right-chat-pane geometry on a 908x1158 Mirai
+    window. Not described as an exact field measurement: live visual geometry
+    or AT-SPI wins when available.
+    """
+    at = active.get("at")
+    size = active.get("size")
+    if not (isinstance(at, (list, tuple)) and isinstance(size, (list, tuple))
+            and len(at) == len(size) == 2):
+        return None
+    wx, wy = int(at[0]), int(at[1])
+    ww, wh = int(size[0]), int(size[1])
+    if ww < 680 or wh < 450:
+        return None
+    mx, my, mw, mh = logical_geometry(monitor)
+    # ChatGPT's desktop split view: left pane 57.3%, composer 17 logical
+    # pixels inside the right pane; bottom top edge 64 px from window bottom.
+    composer_left = wx + ww * .573 + 17
+    composer_top = wy + wh - 64
+    return anchor_by_field_edge(
+        composer_left, composer_top, max(100, wx+ww-composer_left-12), 43,
+        wx, ww, mx, my, mw, mh,
+    )
+
+
 def composer_fallback_anchor(active: dict, monitor: dict) -> tuple[int, int] | None:
     """Window-relative estimate for the bottom-docked ChatGPT desktop composer.
 
@@ -233,16 +260,46 @@ def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
              and m.get("id") == active.get("monitor")),
             None,
         )
-        anchor = composer_fallback_anchor(active, mon) if mon else None
-        if anchor is not None:
-            return Target(
-                address=str(active["address"]),
-                app=str(active.get("class") or ""),
-                monitor=str(mon.get("name") or ""),
-                x=anchor[0], y=anchor[1],
-                title=str(active.get("title") or "")[:100],
-                source="composer-fallback",
-            )
+        if mon is not None:
+            measured = None
+            # This is a native-UI fallback, never OCR or image storage.
+            # Fail quickly if screen capture is blocked by the compositor.
+            if cls in ("chatgpt", "com.openai.chatgpt"):
+                try:
+                    from composer_vision import capture_composer
+                    measured = capture_composer(active)
+                except (ImportError, OSError):
+                    pass
+            measured_anchor = field_anchor(measured, active, monitors) if measured else None
+            if measured_anchor:
+                selected, x, y = measured_anchor
+                return Target(
+                    address=str(active["address"]),
+                    app=str(active.get("class") or ""),
+                    monitor=str(selected.get("name") or ""),
+                    x=x, y=y,
+                    title=str(active.get("title") or "")[:100],
+                    source="composer-measured",
+                )
+            if cls in ("chatgpt", "com.openai.chatgpt"):
+                anchor = chatgpt_split_composer(active, mon)
+                source = "composer-layout"
+                if anchor is None:
+                    # Very narrow windows collapse the two-pane layout.
+                    anchor = composer_fallback_anchor(active, mon)
+                    source = "composer-fallback"
+            else:
+                anchor = composer_fallback_anchor(active, mon)
+                source = "composer-fallback"
+            if anchor is not None:
+                return Target(
+                    address=str(active["address"]),
+                    app=str(active.get("class") or ""),
+                    monitor=str(mon.get("name") or ""),
+                    x=anchor[0], y=anchor[1],
+                    title=str(active.get("title") or "")[:100],
+                    source=source,
+                )
 
     # A pointer can be on a *different* monitor than the active app. Anchor
     # location follows the pointer, while insertion safety follows the app.

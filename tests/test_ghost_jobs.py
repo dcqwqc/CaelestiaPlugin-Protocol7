@@ -50,6 +50,9 @@ class GhostJobsTests(unittest.TestCase):
         self._field_patcher = patch("ghost_wave.focused_rect", return_value=None)
         self._field_patcher.start()
         self.addCleanup(self._field_patcher.stop)
+        self._vision_patcher = patch("composer_vision.capture_composer", return_value=None)
+        self._vision_patcher.start()
+        self.addCleanup(self._vision_patcher.stop)
 
     def test_switching_windows_retains_result_without_injection(self):
         app = App()
@@ -232,8 +235,8 @@ class GhostJobsTests(unittest.TestCase):
                      "width": 2880, "height": 1800, "scale": 1.5}]
         with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
             result = capture_target({"x": 1050, "y": 200})
-        self.assertEqual(result.source, "composer-fallback")
-        self.assertEqual((result.x, result.y), (983, 1098))
+        self.assertEqual(result.source, "composer-layout")
+        self.assertEqual((result.x, result.y), (1465, 1136))
 
     def test_window_left_edge_does_not_clamp_left_composer_placement(self):
         from ghost_wave import composer_fallback_anchor
@@ -267,9 +270,9 @@ class GhostJobsTests(unittest.TestCase):
                      "width": 2880, "height": 1800, "scale": 1.5}]
         with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
             result = capture_target({"x": 1700, "y": 80})
-        self.assertEqual((result.x, result.y, result.source), (477, 1098, "composer-fallback"))
-        # Composer left is 540, fixed 112px pill ends at x=533.
-        self.assertLessEqual(result.x + 56 + 7, 540)
+        self.assertEqual((result.x, result.y, result.source), (1072, 1136, "composer-layout"))
+        # Right-hand pane begins at about x=1135; the pill ends precisely there.
+        self.assertLessEqual(result.x + 56 + 7, 1135)
 
     def test_narrow_composer_pill_stays_within_window(self):
         from ghost_wave import composer_fallback_anchor
@@ -290,6 +293,26 @@ class GhostJobsTests(unittest.TestCase):
         # immediately to its left, vertically aligned to its first line.
         mon, x, y = field_anchor((450, 820, 620, 68), active, monitors)
         self.assertEqual((x, y), (387, 853))
+
+    def test_measured_composer_beats_layout_heuristic(self):
+        active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
+                  "at": [71, 21], "size": [908, 1158]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        with patch("composer_vision.capture_composer", return_value=(608, 1115, 359, 43)):
+            with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+                result = capture_target({"x": 175, "y": 240})
+        self.assertEqual((result.x, result.y, result.source), (545, 1136, "composer-measured"))
+
+    def test_chatgpt_split_layout_matches_mirai_two_pane_capture(self):
+        from ghost_wave import chatgpt_split_composer
+        monitor = {"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                   "width": 2880, "height": 1800, "scale": 1.5}
+        x, y = chatgpt_split_composer({"at": [71, 21], "size": [908, 1158]}, monitor)
+        self.assertEqual((x,y), (545, 1136))
+        # Visual composer left x=608 and vertical center y=1136.5.
+        self.assertLessEqual(abs((x+56+7)-608), 1)
+        self.assertLessEqual(abs(y-1137), 2)
 
     def test_chatgpt_exact_editable_beats_composer_fallback(self):
         active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
