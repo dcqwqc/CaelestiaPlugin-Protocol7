@@ -110,6 +110,9 @@ class QueueSendTests(unittest.TestCase):
             self.assertEqual(self.app.sends[0][2], False)
             self.assertTrue(self.app.enter_interceptor.armed)
             release.set()
+            until(lambda: second.status in ("ready", "inserted", "error"))
+            self.manager._persist()
+            time.sleep(.07)
 
     def test_enter_listener_event_after_queue_command_is_not_focus_change(self):
         started, release = threading.Event(), threading.Event()

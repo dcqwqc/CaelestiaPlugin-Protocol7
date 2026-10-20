@@ -1,65 +1,83 @@
-"""The native Protocol 7 panel is a waveform-only HUD in every state."""
+"""Protocol7: recording is native; transcribing is an independent Wayland wave."""
 from pathlib import Path
 import unittest
 
 
+ROOT = Path(__file__).resolve().parents[1]
+RECORDING = ROOT / "Panel.qml"
+FLOATING = ROOT / "entry/FloatingWave.qml"
+CONTROLLER = ROOT / "entry/Main.qml"
+
+
 class WaveformOnlyTests(unittest.TestCase):
-    def test_no_hover_menu_tooltip_or_text_label(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        for blocked in ("ToolTip", 'text: "Working"', 'text: "Transcribing',
-                        'text: "Processing"', 'text: "Retry"'):
-            self.assertNotIn(blocked, source)
+    def test_recording_remains_in_shell_with_history_hover(self):
+        panel = RECORDING.read_text()
+        self.assertIn("readonly property bool panelDetached: false", panel)
+        self.assertIn("readonly property bool panelVisible: P7.ProtocolState.visible", panel)
+        self.assertIn("readonly property int panelMotionDuration: 0", panel)
+        self.assertIn("readonly property bool panelGlideMotion: false", panel)
+        self.assertIn("id: historyPane", panel)
+        self.assertIn("visible: root.expanded", panel)
+        self.assertIn('text: "Dictation history"', panel)
 
-    def test_both_states_render_full_centered_wave(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn("anchors.horizontalCenter: parent.horizontalCenter", source)
-        self.assertIn("model: root.waitingToSend ? 15 : (root.panelDetached ? 13 : 9)", source)
-        self.assertIn("height: root.panelDetached ? 30 : 20", source)
+    def test_floating_is_loaded_once_from_custom_entry(self):
+        root = CONTROLLER.read_text()
+        self.assertEqual(root.count("FloatingWave { id: floatingWave }"), 1)
+        self.assertIn("ghostOverlayAttached=", root)
+        self.assertIn("ghostOverlayActive=", root)
 
-    def test_processing_never_grabs_pointer(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn('readonly property bool panelInputEnabled: !panelDetached ||', source)
-        self.assertIn('String(ghostJob?.status ?? "") === "ready"', source)
+    def test_dedicated_overlay_bypasses_bottom_edge_mask(self):
+        floating = FLOATING.read_text()
+        self.assertIn("PanelWindow {", floating)
+        self.assertIn("WlrLayershell.layer: WlrLayer.Overlay", floating)
+        self.assertIn("exclusionMode: ExclusionMode.Ignore", floating)
+        self.assertIn("WlrLayershell.keyboardFocus: WlrKeyboardFocus.None", floating)
+        self.assertIn('namespace: "protocol7-ghost-wave"', floating)
+        self.assertIn("anchors.top: true", floating)
+        self.assertIn("anchors.left: true", floating)
+        self.assertNotIn("offsetScale", floating)
+        self.assertNotIn("glideProgress", floating)
+        self.assertNotIn("Easing.InOutSine", floating)
 
-    def test_hover_history_only_recording(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn("readonly property bool expanded: !panelDetached && panelVisible && (panelHostHovered || historyPinned)", source)
-        self.assertIn("id: historyPane", source)
-        self.assertIn("visible: root.expanded", source)
-        self.assertIn('text: "Dictation history"', source)
+    def test_no_movement_animation_or_reposition_during_fadeout(self):
+        floating = FLOATING.read_text()
+        self.assertIn("readonly property real localX: lockedX", floating)
+        self.assertIn("readonly property real localY: lockedY", floating)
+        self.assertIn("if (onMonitor && currentId !==", floating)
+        self.assertIn("lockedX = Number(root.ghostJob?.target?.x", floating)
+        self.assertIn("opacity: win.revealed ? 1 : 0", floating)
+        self.assertIn("scale: win.revealed ? 1 : 0.91", floating)
+        self.assertIn("duration: 180", floating)
+        self.assertIn("duration: 220", floating)
+        self.assertNotIn("Behavior on x", floating)
+        self.assertNotIn("Behavior on y", floating)
 
-    def test_send_queued_wave_is_organic_not_high_frequency_spikes(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn("root.waitingToSend ? 0.38", source)
-        self.assertIn("Math.sin(root.phase * 0.34", source)
-        self.assertIn("root.waitingToSend ? 65 : 26", source)
-        self.assertNotIn("Math.pow(Math.max(0, Math.sin(root.phase + index * 1.08)), 2.5)", source)
+    def test_clickthrough_until_result_needs_action(self):
+        floating = FLOATING.read_text()
+        self.assertIn("mask: Region {", floating)
+        self.assertIn("width: win.canAct ? 112 : 0", floating)
+        self.assertIn("height: win.canAct ? 42 : 0", floating)
+        self.assertIn('String(root.ghostJob?.status ?? "") === "ready"', floating)
+        self.assertIn('ghostJob?.retryable === true', floating)
 
-    def test_floating_job_is_pinned_while_backend_reorders_jobs(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn('property string floatingJobId: ""', source)
-        self.assertIn("onGhostJobsChanged:", source)
-        self.assertIn("ghostJobs.find(job => String(job.id) === floatingJobId)", source)
+    def test_waveform_always_without_status_text(self):
+        floating = FLOATING.read_text()
+        for blocked in ("ToolTip", 'text: "Working"', 'text: "Retry"',
+                        'text: "Transcribing', "historyPane"):
+            self.assertNotIn(blocked, floating)
+        self.assertIn("model: root.waitingToSend ? 15 : 13", floating)
+        self.assertIn("readonly property real queuedWave", floating)
+        self.assertIn("Colours.palette.m3error", floating)
 
-    def test_float_resizing_does_not_move_pill(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn("enabled: !root.panelDetached", source)
-        self.assertIn("readonly property bool panelGlideMotion: true", source)
-        self.assertIn("readonly property int panelMotionDuration: 410", source)
+    def test_send_queue_and_history_remain_in_separate_components(self):
+        floating = FLOATING.read_text()
+        native = RECORDING.read_text()
+        self.assertIn("ghostJob?.sendQueued === true", floating)
+        self.assertIn("id: action", floating)
+        self.assertIn("action.mode", floating)
+        self.assertIn("id: pasteHistory", native)
+        self.assertIn("root.selectedHistoryTimestamp", native)
 
-    def test_native_host_uses_one_curved_progress_for_both_axes(self):
-        host = (Path.home() / ".config/quickshell/caelestia/modules/drawers/ShellPanels.qml").read_text()
-        self.assertIn("property real glideProgress: detached ? 1 : 0", host)
-        self.assertIn("Behavior on glideProgress", host)
-        self.assertIn("return bezier(dockX,", host)
-        self.assertIn("return bezier(dockY,", host)
-        self.assertIn("x: glideMotion ? restingX", host)
-        self.assertIn("y: glideMotion ? restingY", host)
-        self.assertIn("enabled: !panel.glideMotion", host)
 
-    def test_detached_errors_are_retryable_without_status_tooltips(self):
-        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn("id: retryProcess", source)
-        self.assertIn("ghostJob?.retryable === true", source)
-        self.assertIn("Colours.palette.m3error", source)
-        self.assertNotIn('text: "Retry"', source)
+if __name__ == "__main__":
+    unittest.main()

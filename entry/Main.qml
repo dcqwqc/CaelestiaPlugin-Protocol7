@@ -11,6 +11,10 @@ Scope {
 
     property var settings: null
 
+    // Detached/transcribing jobs have their own tiny layer surface. The old
+    // shell edge panel remains recording-only with history-on-hover.
+    FloatingWave { id: floatingWave }
+
     readonly property string configPath: `${Quickshell.env("HOME")}/.config/protocol-7/config.json`
     readonly property string daemonScript: Paths.toLocalFile(Qt.resolvedUrl("../main.py"))
     readonly property string configBridgeScript: Paths.toLocalFile(Qt.resolvedUrl("../plugin_config_bridge.py"))
@@ -260,6 +264,8 @@ Scope {
                 `processing=${P7.ProtocolState.processing}`,
                 `level=${P7.ProtocolState.level}`,
                 `stateMessages=${P7.ProtocolState.messagesReceived}`,
+                `ghostOverlayAttached=${floatingWave !== null}`,
+                `ghostOverlayActive=${floatingWave.detached}`,
                 `ghostJobs=${P7.ProtocolState.jobs.length}`,
                 `ghostStates=${P7.ProtocolState.jobs.map(j => String(j.status)).join(",")}`
             ].join("

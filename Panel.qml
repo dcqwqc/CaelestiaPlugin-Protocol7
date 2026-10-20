@@ -8,9 +8,9 @@ import qs.services
 import qs.utils
 import dcqwqc.protocol7.services as P7
 
-// Detached processing is waveform-only. Recording-mode hover restores a
-// compact transcription history anchored above the native bottom waveform.
-// No processing labels, tooltips, or extra overlay window.
+// Recording-only native Caelestia bottom panel and hover history.
+// Detached transcription is rendered by entry/FloatingWave.qml in its own
+// Wayland layer surface, never drawn through the bottom-edge BlobGroup.
 Item {
     id: root
 
@@ -35,26 +35,24 @@ Item {
     }
     readonly property var ghostJob: ghostJobs.find(job => String(job.id) === floatingJobId)
         ?? (ghostJobs.length > 0 ? ghostJobs[0] : null)
-    readonly property bool panelDetached: !P7.ProtocolState.visible && ghostJob !== null
+    readonly property bool panelDetached: false
     readonly property bool waitingToSend: panelDetached && ghostJob?.sendQueued === true
     readonly property real panelAnchorX: Number(ghostJob?.target?.x ?? NaN)
     readonly property real panelAnchorY: Number(ghostJob?.target?.y ?? NaN)
     readonly property string panelMonitorName: String(ghostJob?.target?.monitor ?? "")
-    readonly property bool panelVisible: P7.ProtocolState.visible || ghostJob !== null
+    readonly property bool panelVisible: P7.ProtocolState.visible
 
     // Native input masking is essential for hover: allow pointer events over
     // the recording pill/history, but keep detached *processing* click-through.
-    readonly property bool panelInputEnabled: !panelDetached ||
-        String(ghostJob?.status ?? "") === "ready" ||
-        (String(ghostJob?.status ?? "") === "error" && ghostJob?.retryable === true)
+    readonly property bool panelInputEnabled: panelVisible
     readonly property bool panelTouchTargetEnabled: !panelDetached
     readonly property bool panelTouchPinned: !panelDetached && historyPinned
     readonly property bool expanded: !panelDetached && panelVisible && (panelHostHovered || historyPinned)
     readonly property bool panelOverFullscreen: Osk.inset <= 0
     readonly property bool panelLiftShadow: true
     readonly property real panelDeformAmount: 0.03
-    readonly property int panelMotionDuration: 410
-    readonly property bool panelGlideMotion: true
+    readonly property int panelMotionDuration: 0
+    readonly property bool panelGlideMotion: false
 
     implicitWidth: panelDetached ? 112 : (expanded ? 376 : 112)
     implicitHeight: panelDetached ? 42 : (expanded ? 318 : 32)
