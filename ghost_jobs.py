@@ -193,11 +193,13 @@ class GhostJobs:
             with self.lock:
                 if job.cancelled or job.attempt != attempt or job.status != "processing":
                     return
+                # Commit history and ready status together. A dismiss arriving
+                # here either wins (nothing saved/inserted) or waits for the
+                # completed result and then cancels its visible pill.
+                add_history(result.strip())
                 job.text = result.strip()
                 job.audio = None
                 job.status = "ready"
-            with self.lock:
-                add_history(job.text)
             self._publish()
             self._persist()
             self._archive_after(job.id, "ready", self.ready_visible_seconds)
@@ -255,6 +257,27 @@ class GhostJobs:
             self._publish()
             self._persist()
             return {"ok": True, "inserted": True}
+
+    def dismiss_visible(self):
+        """Dismiss floating work atomically; late STT results cannot return.
+
+        Only a completed manual text insertion is retained; we cannot safely
+        interrupt synthesized keystrokes midway through an insertion.
+        """
+        with self.lock:
+            visible = [
+                job for job in self.jobs.values()
+                if job.status in ("queued", "processing", "ready", "error")
+            ]
+            if not visible:
+                return False
+            for job in visible:
+                job.cancelled = True
+                job.status = "cancelled"
+                job.audio = None
+        self._publish()
+        self._persist()
+        return True
 
     def cancel(self, job_id):
         with self.lock:

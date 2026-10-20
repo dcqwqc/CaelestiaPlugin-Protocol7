@@ -142,10 +142,15 @@ class Protocol7App:
         }
 
     def _toggle_ghost(self, source):
-        # No cloud work happens here. Second Ctrl frees the recording device,
-        # transfers ownership to a detached job and immediately accepts another.
+        # No cloud work happens here. Another Double-Ctrl while the detached
+        # wave is visible dismisses it instead of starting a new recording.
+        # Explicit "start" still permits back-to-back recordings on demand.
         with self._dictation_lock:
             if not self.is_active:
+                if source != "control-start" and self._ghost.dismiss_visible():
+                    self.ui_manager.hide()
+                    log_debug(f"Ghost Wave dismissed via {source}; late result invalidated")
+                    return self._dictation_status()
                 # Capture the pointer at the hotkey press, before recorder
                 # setup/UI rendering can shift timing or the user moves away.
                 pointer_at_press = hypr_json("cursorpos")
@@ -262,7 +267,11 @@ class Protocol7App:
             with self._dictation_lock:
                 if self.is_active:
                     return self._toggle_dictation("control-stop")
-                if self.is_processing and not hasattr(self, "_ghost"):
+                if hasattr(self, "_ghost"):
+                    if self._ghost.dismiss_visible():
+                        self.ui_manager.hide()
+                    return self._dictation_status()
+                if self.is_processing:
                     return self._toggle_dictation("control-cancel")
                 return self._dictation_status()
         return {"ok": False, "error": "unsupported command"}
