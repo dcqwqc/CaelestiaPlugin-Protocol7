@@ -80,6 +80,69 @@ def focused_rect(active: dict) -> tuple[int, int, int, int] | None:
     return None
 
 
+# The floating surface is fixed-size so its anchor never changes when the
+# waveform changes between transcribing and queued-Send states.
+GHOST_PILL_WIDTH = 136
+GHOST_PILL_HEIGHT = 42
+GHOST_SIDE_GAP = 12
+GHOST_TOP_GAP = 9
+
+
+def anchor_by_field_edge(
+    x: float, y: float, w: float, h: float,
+    window_x: float, window_width: float,
+    monitor_x: float, monitor_y: float, monitor_width: float, monitor_height: float,
+) -> tuple[int, int]:
+    """Prefer left of an input. In narrow layouts float above its left edge.
+
+    Return a monitor-local *pill centre*, never the top-left corner. Keep the
+    entire waveform within both the active app and the visible monitor.
+    """
+    half_w = GHOST_PILL_WIDTH / 2
+    half_h = GHOST_PILL_HEIGHT / 2
+    safe_left = max(window_x + 8, monitor_x + 8)
+    safe_right = min(window_x + window_width - 8, monitor_x + monitor_width - 8)
+
+    side_center_x = x - GHOST_SIDE_GAP - half_w
+    if side_center_x - half_w >= safe_left:
+        cx = side_center_x
+        cy = y + min(h / 2, 33)
+    else:
+        cx = x + half_w + 6
+        cy = y - GHOST_TOP_GAP - half_h
+
+    cx = max(safe_left + half_w, min(safe_right - half_w, cx))
+    cy = max(monitor_y + half_h + 8, min(monitor_y + monitor_height - half_h - 8, cy))
+    return round(cx - monitor_x), round(cy - monitor_y)
+
+
+def composer_fallback_anchor(active: dict, monitor: dict) -> tuple[int, int] | None:
+    """Window-relative estimate for the bottom-docked ChatGPT desktop composer.
+
+    On a wide window the composer has a maximum width and is centered.
+    On a narrow window, the wave is above-left rather than hanging offscreen.
+    """
+    at = active.get("at")
+    size = active.get("size")
+    if not (
+        isinstance(at, (list, tuple)) and isinstance(size, (list, tuple))
+        and len(at) == 2 and len(size) == 2
+    ):
+        return None
+    wx, wy = int(at[0]), int(at[1])
+    ww, wh = int(size[0]), int(size[1])
+    if ww < 350 or wh < 400:
+        return None
+    mx, my, mw, mh = logical_geometry(monitor)
+    composer_width = min(890, max(1, ww - 110))
+    composer_x = wx + (ww - composer_width) / 2
+    composer_y = wy + wh - 114
+    return anchor_by_field_edge(
+        composer_x, composer_y, composer_width, 68,
+        wx, ww, mx, my, mw, mh,
+    )
+
+
 def field_anchor(rect: tuple[int, int, int, int], active: dict, monitors: list[dict]):
     """Normalize AT-SPI screen bounds against compositor-logical coordinates.
 
@@ -112,8 +175,9 @@ def field_anchor(rect: tuple[int, int, int, int], active: dict, monitors: list[d
         # A whole-page/whole-terminal accessible is not a focused text input.
         if h > ah * .85 and w > aw * .75:
             continue
-        # Position the pill's *bottom* 12px above the field's top edge.
-        return mon, round(cx - mx), round(y - my - 33)
+        return mon, *anchor_by_field_edge(
+            x, y, w, h, ax, aw, mx, my, mw, mh,
+        )
     return None
 
 
@@ -152,32 +216,25 @@ def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
             source="focused-field",
         )
 
-    # The ChatGPT/Codex desktop app does not currently expose its composer
-    # via AT-SPI. Its input is bottom-docked, NOT underneath the pointer.
-    # Use the window bottom as a deliberate app-specific fallback. The wave's
-    # centre sits ~20px above the composer top; keep it in the left third,
-    # where the writing area begins (rather than the Send button).
+    # Exact field geometry is always preferred. ChatGPT/Codex falls back to
+    # the bottom-docked composer geometry instead of the drifting pointer.
     cls = str(active.get("class") or "").casefold()
     if cls in ("chatgpt", "com.openai.chatgpt"):
         mon = next(
-            (m for m in monitors if isinstance(m, dict) and m.get("id") == active.get("monitor")),
+            (m for m in monitors if isinstance(m, dict)
+             and m.get("id") == active.get("monitor")),
             None,
         )
-        at, size = active.get("at"), active.get("size")
-        if mon and isinstance(at, list) and isinstance(size, list) and len(at) == len(size) == 2:
-            origin_x, origin_y, width, height = logical_geometry(mon)
-            win_x, win_y = int(at[0]), int(at[1])
-            win_w, win_h = int(size[0]), int(size[1])
-            if win_w >= 350 and win_h >= 400:
-                return Target(
-                    address=str(active["address"]),
-                    app=str(active.get("class") or ""),
-                    monitor=str(mon.get("name") or ""),
-                    x=max(0, min(width - 1, round(win_x - origin_x + win_w * .26))),
-                    y=max(0, min(height - 1, round(win_y - origin_y + win_h - 146))),
-                    title=str(active.get("title") or "")[:100],
-                    source="composer-fallback",
-                )
+        anchor = composer_fallback_anchor(active, mon) if mon else None
+        if anchor is not None:
+            return Target(
+                address=str(active["address"]),
+                app=str(active.get("class") or ""),
+                monitor=str(mon.get("name") or ""),
+                x=anchor[0], y=anchor[1],
+                title=str(active.get("title") or "")[:100],
+                source="composer-fallback",
+            )
 
     # A pointer can be on a *different* monitor than the active app. Anchor
     # location follows the pointer, while insertion safety follows the app.

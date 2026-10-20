@@ -20,7 +20,21 @@ Item {
     property var historyEntries: []
     property string selectedHistoryTimestamp: ""
 
-    readonly property var ghostJob: P7.ProtocolState.jobs.length > 0 ? P7.ProtocolState.jobs[0] : null
+    // Stable identity for the entire floating lifetime. Backend prioritizes
+    // processing over ready, but a second job must never make this bubble
+    // jump to a different input midway through its flight.
+    property string floatingJobId: ""
+    readonly property var ghostJobs: P7.ProtocolState.jobs
+    onGhostJobsChanged: {
+        const rows = ghostJobs ?? [];
+        if (!rows.length) {
+            floatingJobId = "";
+        } else if (!rows.some(job => String(job.id) === floatingJobId)) {
+            floatingJobId = String(rows[0].id);
+        }
+    }
+    readonly property var ghostJob: ghostJobs.find(job => String(job.id) === floatingJobId)
+        ?? (ghostJobs.length > 0 ? ghostJobs[0] : null)
     readonly property bool panelDetached: !P7.ProtocolState.visible && ghostJob !== null
     readonly property bool waitingToSend: panelDetached && ghostJob?.sendQueued === true
     readonly property real panelAnchorX: Number(ghostJob?.target?.x ?? NaN)
@@ -37,7 +51,8 @@ Item {
     readonly property bool panelOverFullscreen: Osk.inset <= 0
     readonly property bool panelLiftShadow: true
     readonly property real panelDeformAmount: 0.03
-    readonly property int panelMotionDuration: 230
+    readonly property int panelMotionDuration: 410
+    readonly property bool panelGlideMotion: true
 
     implicitWidth: panelDetached ? 136 : (expanded ? 376 : 112)
     implicitHeight: panelDetached ? 42 : (expanded ? 318 : 32)
@@ -51,8 +66,17 @@ Item {
             historyPinned = false;
     }
 
-    Behavior on implicitWidth { NumberAnimation { duration: 165; easing.type: Easing.OutCubic } }
-    Behavior on implicitHeight { NumberAnimation { duration: 165; easing.type: Easing.OutCubic } }
+    // No resize while detaching: otherwise host x = anchor - width/2
+    // changes every frame and the whole floating bubble visibly oscillates.
+    // Recording-only history hover may still expand normally.
+    Behavior on implicitWidth {
+        enabled: !root.panelDetached
+        NumberAnimation { duration: 165; easing.type: Easing.OutCubic }
+    }
+    Behavior on implicitHeight {
+        enabled: !root.panelDetached
+        NumberAnimation { duration: 165; easing.type: Easing.OutCubic }
+    }
 
     Process {
         id: insertProcess

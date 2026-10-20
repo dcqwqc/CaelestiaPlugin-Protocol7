@@ -220,7 +220,7 @@ class GhostJobsTests(unittest.TestCase):
         self.assertEqual(manager.snapshot()[0]["id"], new.id)
         hold.set()
 
-    def test_chatgpt_composer_fallback_is_bottom_docked_not_at_pointer(self):
+    def test_narrow_chatgpt_composer_stays_above_left_not_at_pointer(self):
         active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
                   "at": [991, 21], "size": [908, 1158]}
         monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
@@ -228,7 +228,38 @@ class GhostJobsTests(unittest.TestCase):
         with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
             result = capture_target({"x": 1050, "y": 200})
         self.assertEqual(result.source, "composer-fallback")
-        self.assertEqual((result.x, result.y), (1227, 1033))
+        self.assertEqual((result.x, result.y), (1120, 1035))
+
+    def test_wide_chatgpt_places_ghost_beside_composer(self):
+        active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
+                  "at": [71, 21], "size": [1828, 1158]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+            result = capture_target({"x": 1700, "y": 80})
+        self.assertEqual((result.x, result.y, result.source), (460, 1098, "composer-fallback"))
+        # Composer's left edge is at 540; the 136px bubble ends at 528.
+        self.assertLessEqual(result.x + 68 + 12, 540)
+
+    def test_narrow_composer_pill_stays_within_window(self):
+        from ghost_wave import composer_fallback_anchor
+        active = {"at": [100, 30], "size": [420, 700]}
+        monitor = {"x": 0, "y": 0, "width": 2880, "height": 1800,
+                   "scale": 1.5}
+        x, y = composer_fallback_anchor(active, monitor)
+        self.assertGreaterEqual(x - 68, 108)
+        self.assertLessEqual(x + 68, 512)
+        self.assertLess(y, 30 + 700 - 114)
+
+    def test_exact_focused_field_prefers_side_when_there_is_room(self):
+        from ghost_wave import field_anchor
+        active = {"monitor": 0, "at": [50, 20], "size": [1100, 1000]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 1920, "height": 1080, "scale": 1}]
+        # Field starts deep enough into this window for a 136px pill to sit
+        # immediately to its left, vertically aligned to its first line.
+        mon, x, y = field_anchor((450, 820, 620, 68), active, monitors)
+        self.assertEqual((x, y), (370, 853))
 
     def test_chatgpt_exact_editable_beats_composer_fallback(self):
         active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
@@ -238,20 +269,20 @@ class GhostJobsTests(unittest.TestCase):
         with patch("ghost_wave.focused_rect", return_value=(180, 885, 700, 40)):
             with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
                 result = capture_target({"x": 1000, "y": 250})
-        self.assertEqual((result.x, result.y, result.source), (530, 852, "focused-field"))
+        self.assertEqual((result.x, result.y, result.source), (254, 855, "focused-field"))
 
-    def test_selected_input_field_anchors_above_actual_rect_not_mouse(self):
+    def test_selected_input_field_anchors_above_left_when_no_side_room(self):
         from ghost_wave import field_anchor
         active = {"address": "0xab", "class": "app.zen_browser.zen",
                   "monitor": 0, "at": [70, 20], "size": [900, 1100]}
         monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
                      "width": 2880, "height": 1800, "scale": 1.5}]
         rect = (100, 950, 760, 42)
-        self.assertEqual(field_anchor(rect, active, monitors)[1:], (480, 917))
+        self.assertEqual(field_anchor(rect, active, monitors)[1:], (174, 920))
         with patch("ghost_wave.focused_rect", return_value=rect):
             with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 920, "y": 240}]):
                 target = capture_target()
-        self.assertEqual((target.monitor, target.x, target.y), ("eDP-1", 480, 917))
+        self.assertEqual((target.monitor, target.x, target.y), ("eDP-1", 174, 920))
         self.assertEqual(target.source, "focused-field")
 
     def test_field_on_scaled_screen_normalizes_physical_geometry(self):
@@ -261,7 +292,7 @@ class GhostJobsTests(unittest.TestCase):
                      "width": 2880, "height": 1800, "scale": 1.5}]
         # Physical bounding box must be divided to match logical window.
         self.assertEqual(field_anchor((330, 1200, 1200, 72), active, monitors)[1:],
-                         (620, 767))
+                         (140, 824))
 
     def test_outside_window_focus_rectangle_rejected(self):
         from ghost_wave import field_anchor
