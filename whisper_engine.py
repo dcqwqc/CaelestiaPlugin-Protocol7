@@ -39,8 +39,8 @@ class WhisperEngine:
                     if self.groq_client is None or self.current_groq_key != api_key:
                         self.groq_client = Groq(
                             api_key=api_key,
-                            timeout=float(self.config.get("groq_timeout_seconds", 15.0)),
-                            max_retries=1,
+                            timeout=float(self.config.get("groq_timeout_seconds", 10.0)),
+                            max_retries=0,
                         )
                         self.current_groq_key = api_key
                     return

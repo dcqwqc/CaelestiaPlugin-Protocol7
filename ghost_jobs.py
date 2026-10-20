@@ -46,8 +46,8 @@ class GhostJobs:
         self._paste_lock = threading.Lock()
         self._persist_lock = threading.Lock()
         self.job_timeout_seconds = 40.0
-        self.ready_visible_seconds = 8.0
-        self.error_visible_seconds = 4.0
+        self.ready_visible_seconds = 45.0
+        self.error_visible_seconds = 15.0
         self.jobs = OrderedDict()
         # Single STT worker keeps on-device Whisper and Groq ordering safe,
         # while recording and mouse/keyboard remain completely independent.
@@ -271,9 +271,11 @@ class GhostJobs:
                 ok = self.app.paste_text(text)
                 if ok is False:
                     raise RuntimeError("text insertion failed")
-                # wtype may exit before the app has rendered its input event.
-                # Keep the waveform visible as "inserting" until settled.
-                time.sleep(0.18)
+                # Wayland virtual-keyboard delivery is asynchronous: a wtype
+                # success means events were submitted, not that the composer
+                # has rendered them. Keep the wave visible while its input
+                # queue drains. Do not synthesize queued Enter yet.
+                time.sleep(min(0.78, max(0.38, len(text) * 0.0015)))
             except Exception as exc:
                 with self.lock:
                     job.status = "ready"

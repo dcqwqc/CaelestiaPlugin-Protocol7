@@ -18,10 +18,8 @@ class WaveformOnlyTests(unittest.TestCase):
 
     def test_processing_never_grabs_pointer(self):
         source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
-        self.assertIn(
-            'readonly property bool panelInputEnabled: !panelDetached || String(ghostJob?.status ?? "") === "ready"',
-            source,
-        )
+        self.assertIn('readonly property bool panelInputEnabled: !panelDetached ||', source)
+        self.assertIn('String(ghostJob?.status ?? "") === "ready"', source)
 
     def test_hover_history_only_recording(self):
         source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
@@ -49,8 +47,19 @@ class WaveformOnlyTests(unittest.TestCase):
         self.assertIn("readonly property bool panelGlideMotion: true", source)
         self.assertIn("readonly property int panelMotionDuration: 410", source)
 
-    def test_native_host_uses_one_smooth_glide_for_detached_bubble(self):
+    def test_native_host_uses_one_curved_progress_for_both_axes(self):
         host = (Path.home() / ".config/quickshell/caelestia/modules/drawers/ShellPanels.qml").read_text()
-        self.assertIn("readonly property bool glideMotion:", host)
-        self.assertIn("duration: panel.glideMotion ? 410 : 230", host)
-        self.assertIn("panel.glideMotion ? Easing.InOutSine : Easing.OutCubic", host)
+        self.assertIn("property real glideProgress: detached ? 1 : 0", host)
+        self.assertIn("Behavior on glideProgress", host)
+        self.assertIn("return bezier(dockX,", host)
+        self.assertIn("return bezier(dockY,", host)
+        self.assertIn("x: glideMotion ? restingX", host)
+        self.assertIn("y: glideMotion ? restingY", host)
+        self.assertIn("enabled: !panel.glideMotion", host)
+
+    def test_detached_errors_are_retryable_without_status_tooltips(self):
+        source = (Path(__file__).resolve().parents[1] / "Panel.qml").read_text()
+        self.assertIn("id: retryProcess", source)
+        self.assertIn("ghostJob?.retryable === true", source)
+        self.assertIn("Colours.palette.m3error", source)
+        self.assertNotIn('text: "Retry"', source)

@@ -82,10 +82,10 @@ def focused_rect(active: dict) -> tuple[int, int, int, int] | None:
 
 # The floating surface is fixed-size so its anchor never changes when the
 # waveform changes between transcribing and queued-Send states.
-GHOST_PILL_WIDTH = 136
+GHOST_PILL_WIDTH = 112
 GHOST_PILL_HEIGHT = 42
-GHOST_SIDE_GAP = 12
-GHOST_TOP_GAP = 9
+GHOST_SIDE_GAP = 7
+GHOST_TOP_GAP = 5
 
 
 def anchor_by_field_edge(
@@ -95,20 +95,27 @@ def anchor_by_field_edge(
 ) -> tuple[int, int]:
     """Prefer left of an input. In narrow layouts float above its left edge.
 
-    Return a monitor-local *pill centre*, never the top-left corner. Keep the
-    entire waveform within both the active app and the visible monitor.
+    Return a monitor-local *pill centre*, never the top-left corner. The
+    entire bubble stays inside the usable monitor, but is allowed outside the
+    app's window on its left. Clamping to the *window* forced the pill far
+    above the composer whenever the app was tiled narrow.
     """
     half_w = GHOST_PILL_WIDTH / 2
     half_h = GHOST_PILL_HEIGHT / 2
-    safe_left = max(window_x + 8, monitor_x + 8)
-    safe_right = min(window_x + window_width - 8, monitor_x + monitor_width - 8)
+    # Caelestia reserves a small left rail. Do not clamp against the owning
+    # application: a tiled ChatGPT window can have ample free screen space
+    # immediately left of its composer.
+    safe_left = monitor_x + min(64, monitor_width * .05) + 8
+    safe_right = monitor_x + monitor_width - 8
 
     side_center_x = x - GHOST_SIDE_GAP - half_w
     if side_center_x - half_w >= safe_left:
         cx = side_center_x
         cy = y + min(h / 2, 33)
     else:
-        cx = x + half_w + 6
+        # In a genuinely edge-aligned window, sit directly above its LEFT
+        # edge, not several pill-widths farther into the text field.
+        cx = x + half_w
         cy = y - GHOST_TOP_GAP - half_h
 
     cx = max(safe_left + half_w, min(safe_right - half_w, cx))

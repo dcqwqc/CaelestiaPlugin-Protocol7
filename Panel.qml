@@ -44,7 +44,9 @@ Item {
 
     // Native input masking is essential for hover: allow pointer events over
     // the recording pill/history, but keep detached *processing* click-through.
-    readonly property bool panelInputEnabled: !panelDetached || String(ghostJob?.status ?? "") === "ready"
+    readonly property bool panelInputEnabled: !panelDetached ||
+        String(ghostJob?.status ?? "") === "ready" ||
+        (String(ghostJob?.status ?? "") === "error" && ghostJob?.retryable === true)
     readonly property bool panelTouchTargetEnabled: !panelDetached
     readonly property bool panelTouchPinned: !panelDetached && historyPinned
     readonly property bool expanded: !panelDetached && panelVisible && (panelHostHovered || historyPinned)
@@ -54,7 +56,7 @@ Item {
     readonly property int panelMotionDuration: 410
     readonly property bool panelGlideMotion: true
 
-    implicitWidth: panelDetached ? 136 : (expanded ? 376 : 112)
+    implicitWidth: panelDetached ? 112 : (expanded ? 376 : 112)
     implicitHeight: panelDetached ? 42 : (expanded ? 318 : 32)
 
     function dismissTouchPanel(): void {
@@ -76,6 +78,14 @@ Item {
     Behavior on implicitHeight {
         enabled: !root.panelDetached
         NumberAnimation { duration: 165; easing.type: Easing.OutCubic }
+    }
+
+    Process {
+        id: retryProcess
+        property string jobId: ""
+        command: ["python3", Paths.toLocalFile(Qt.resolvedUrl("control_ipc.py")),
+                  "retry", jobId]
+        running: false
     }
 
     Process {
@@ -218,7 +228,12 @@ Item {
             onTapped: {
                 if (!root.panelDetached) {
                     root.historyPinned = !root.historyPinned;
-                } else if (!insertProcess.running && root.ghostJob) {
+                } else if (root.ghostJob?.status === "error" &&
+                           root.ghostJob?.retryable === true && !retryProcess.running) {
+                    retryProcess.jobId = String(root.ghostJob.id);
+                    retryProcess.running = true;
+                } else if (root.ghostJob?.status === "ready" &&
+                           !insertProcess.running) {
                     insertProcess.jobId = String(root.ghostJob.id);
                     insertProcess.running = true;
                 }
@@ -256,7 +271,9 @@ Item {
                         width: parent.width
                         height: 4 + parent.amount * (parent.height - 4)
                         radius: 2
-                        color: Colours.palette.m3primary
+                        color: root.ghostJob?.status === "error"
+                            ? Colours.palette.m3error
+                            : Colours.palette.m3primary
                         opacity: 0.94
 
                         Behavior on height {

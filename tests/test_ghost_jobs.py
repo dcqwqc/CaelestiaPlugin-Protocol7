@@ -193,6 +193,11 @@ class GhostJobsTests(unittest.TestCase):
             self.assertEqual(restored.snapshot()[0]["id"], job.id)
             schedule.assert_called_once_with(job.id, "ready", restored.ready_visible_seconds)
 
+    def test_ready_stays_visible_long_enough_for_manual_recovery(self):
+        manager = GhostJobs(App())
+        self.assertGreaterEqual(manager.ready_visible_seconds, 40.0)
+        self.assertGreaterEqual(manager.error_visible_seconds, 12.0)
+
     def test_failed_recording_auto_dismisses(self):
         app = App("")
         manager = GhostJobs(app)
@@ -228,7 +233,25 @@ class GhostJobsTests(unittest.TestCase):
         with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
             result = capture_target({"x": 1050, "y": 200})
         self.assertEqual(result.source, "composer-fallback")
-        self.assertEqual((result.x, result.y), (1120, 1035))
+        self.assertEqual((result.x, result.y), (983, 1098))
+
+    def test_window_left_edge_does_not_clamp_left_composer_placement(self):
+        from ghost_wave import composer_fallback_anchor
+        monitor = {"x": 0, "y": 0, "width": 2880, "height": 1800,
+                   "scale": 1.5}
+        # The ChatGPT window is tiled on the right. The pill may float into
+        # screen space just left of that window without clamping to its edge.
+        x, y = composer_fallback_anchor({"at": [991, 21], "size": [908, 1158]}, monitor)
+        self.assertLess(x, 991)
+        self.assertEqual((x, y), (983, 1098))
+
+    def test_leftmost_window_falls_back_to_above_left(self):
+        from ghost_wave import composer_fallback_anchor
+        monitor = {"x": 0, "y": 0, "width": 2880, "height": 1800,
+                   "scale": 1.5}
+        x, y = composer_fallback_anchor({"at": [0, 21], "size": [908, 1158]}, monitor)
+        self.assertGreaterEqual(x - 56, 72)  # preserve the Caelestia rail
+        self.assertLess(y, 21 + 1158 - 114)
 
     def test_wide_chatgpt_places_ghost_beside_composer(self):
         active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
@@ -237,9 +260,9 @@ class GhostJobsTests(unittest.TestCase):
                      "width": 2880, "height": 1800, "scale": 1.5}]
         with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
             result = capture_target({"x": 1700, "y": 80})
-        self.assertEqual((result.x, result.y, result.source), (460, 1098, "composer-fallback"))
-        # Composer's left edge is at 540; the 136px bubble ends at 528.
-        self.assertLessEqual(result.x + 68 + 12, 540)
+        self.assertEqual((result.x, result.y, result.source), (477, 1098, "composer-fallback"))
+        # Composer left is 540, fixed 112px pill ends at x=533.
+        self.assertLessEqual(result.x + 56 + 7, 540)
 
     def test_narrow_composer_pill_stays_within_window(self):
         from ghost_wave import composer_fallback_anchor
@@ -247,8 +270,8 @@ class GhostJobsTests(unittest.TestCase):
         monitor = {"x": 0, "y": 0, "width": 2880, "height": 1800,
                    "scale": 1.5}
         x, y = composer_fallback_anchor(active, monitor)
-        self.assertGreaterEqual(x - 68, 108)
-        self.assertLessEqual(x + 68, 512)
+        self.assertGreaterEqual(x - 56, 72)
+        self.assertLessEqual(x + 56, 520)
         self.assertLess(y, 30 + 700 - 114)
 
     def test_exact_focused_field_prefers_side_when_there_is_room(self):
@@ -259,7 +282,7 @@ class GhostJobsTests(unittest.TestCase):
         # Field starts deep enough into this window for a 136px pill to sit
         # immediately to its left, vertically aligned to its first line.
         mon, x, y = field_anchor((450, 820, 620, 68), active, monitors)
-        self.assertEqual((x, y), (370, 853))
+        self.assertEqual((x, y), (387, 853))
 
     def test_chatgpt_exact_editable_beats_composer_fallback(self):
         active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
@@ -269,7 +292,7 @@ class GhostJobsTests(unittest.TestCase):
         with patch("ghost_wave.focused_rect", return_value=(180, 885, 700, 40)):
             with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
                 result = capture_target({"x": 1000, "y": 250})
-        self.assertEqual((result.x, result.y, result.source), (254, 855, "focused-field"))
+        self.assertEqual((result.x, result.y, result.source), (236, 859, "focused-field"))
 
     def test_selected_input_field_anchors_above_left_when_no_side_room(self):
         from ghost_wave import field_anchor
@@ -278,11 +301,11 @@ class GhostJobsTests(unittest.TestCase):
         monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
                      "width": 2880, "height": 1800, "scale": 1.5}]
         rect = (100, 950, 760, 42)
-        self.assertEqual(field_anchor(rect, active, monitors)[1:], (174, 920))
+        self.assertEqual(field_anchor(rect, active, monitors)[1:], (156, 924))
         with patch("ghost_wave.focused_rect", return_value=rect):
             with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 920, "y": 240}]):
                 target = capture_target()
-        self.assertEqual((target.monitor, target.x, target.y), ("eDP-1", 174, 920))
+        self.assertEqual((target.monitor, target.x, target.y), ("eDP-1", 156, 924))
         self.assertEqual(target.source, "focused-field")
 
     def test_field_on_scaled_screen_normalizes_physical_geometry(self):
@@ -292,7 +315,7 @@ class GhostJobsTests(unittest.TestCase):
                      "width": 2880, "height": 1800, "scale": 1.5}]
         # Physical bounding box must be divided to match logical window.
         self.assertEqual(field_anchor((330, 1200, 1200, 72), active, monitors)[1:],
-                         (140, 824))
+                         (157, 824))
 
     def test_outside_window_focus_rectangle_rejected(self):
         from ghost_wave import field_anchor
