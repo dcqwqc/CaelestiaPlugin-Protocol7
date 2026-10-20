@@ -226,7 +226,8 @@ def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
     # Exact field geometry is always preferred. ChatGPT/Codex falls back to
     # the bottom-docked composer geometry instead of the drifting pointer.
     cls = str(active.get("class") or "").casefold()
-    if cls in ("chatgpt", "com.openai.chatgpt"):
+    is_chatgpt_page = ("zen" in cls or "firefox" in cls) and "chatgpt" in str(active.get("title") or "").casefold()
+    if cls in ("chatgpt", "com.openai.chatgpt") or is_chatgpt_page:
         mon = next(
             (m for m in monitors if isinstance(m, dict)
              and m.get("id") == active.get("monitor")),

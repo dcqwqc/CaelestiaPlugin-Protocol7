@@ -253,6 +253,13 @@ class GhostJobsTests(unittest.TestCase):
         self.assertGreaterEqual(x - 56, 72)  # preserve the Caelestia rail
         self.assertLess(y, 21 + 1158 - 114)
 
+    def test_chatgpt_zen_tab_prefers_composer_over_cursor(self):
+        active={"address":"0xab", "class":"app.zen_browser.zen", "title":"ChatGPT - conversation", "monitor":0, "at":[71,21], "size":[1828,1158]}
+        monitors=[{"id":0,"name":"eDP-1","x":0,"y":0,"width":2880,"height":1800,"scale":1.5}]
+        with patch("ghost_wave.hypr_json",side_effect=[active,monitors]):
+            target=capture_target({"x":1400,"y":200})
+        self.assertEqual((target.x,target.y,target.source),(477,1098,"composer-fallback"))
+
     def test_wide_chatgpt_places_ghost_beside_composer(self):
         active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
                   "at": [71, 21], "size": [1828, 1158]}
