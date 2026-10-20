@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import dcqwqc.protocol7.services as P7
+import dcqwqc.protocol7.entry as P7Entry
 import qs.utils
 
 // Protocol7 backend controller. Visual presentation is a separate shell-panel
@@ -13,7 +14,7 @@ Scope {
 
     // Detached/transcribing jobs have their own tiny layer surface. The old
     // shell edge panel remains recording-only with history-on-hover.
-    FloatingWave { id: floatingWave }
+    P7Entry.FloatingWave { id: floatingWave }
 
     readonly property string configPath: `${Quickshell.env("HOME")}/.config/protocol-7/config.json`
     readonly property string daemonScript: Paths.toLocalFile(Qt.resolvedUrl("../main.py"))

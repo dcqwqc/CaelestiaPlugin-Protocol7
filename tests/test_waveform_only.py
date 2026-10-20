@@ -22,7 +22,8 @@ class WaveformOnlyTests(unittest.TestCase):
 
     def test_floating_is_loaded_once_from_custom_entry(self):
         root = CONTROLLER.read_text()
-        self.assertEqual(root.count("FloatingWave { id: floatingWave }"), 1)
+        self.assertEqual(root.count("P7Entry.FloatingWave { id: floatingWave }"), 1)
+        self.assertIn("import dcqwqc.protocol7.entry as P7Entry", root)
         self.assertIn("ghostOverlayAttached=", root)
         self.assertIn("ghostOverlayActive=", root)
 
