@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import Caelestia.Config
+import qs.components.effects
 import qs.services
 import qs.utils
 import dcqwqc.protocol7.services as P7
@@ -16,6 +17,9 @@ Scope {
     id: root
 
     property real phase: 0
+    readonly property int pillWidth: 102
+    readonly property int pillHeight: 38
+    readonly property int shadowInset: 16
     property string floatingJobId: ""
     readonly property var ghostJobs: P7.ProtocolState.jobs
 
@@ -43,7 +47,7 @@ Scope {
         interval: 28
         running: root.detached
         repeat: true
-        onTriggered: root.phase += root.waitingToSend ? 0.38 : 0.32
+        onTriggered: root.phase += root.waitingToSend ? 0.31 : 0.24
     }
 
     Variants {
@@ -85,11 +89,12 @@ Scope {
             anchors.top: true
             anchors.left: true
             // Monitor-local coordinates from ghost_wave.py are *pill centers*.
-            // The surface has 16px of shadow padding on all sides.
+            // Shadow padding equals the native Elevation level-3 blur
+            // allowance. The compositor window remains centered on target.
             readonly property real localX: lockedX
             readonly property real localY: lockedY
-            implicitWidth: 144
-            implicitHeight: 74
+            implicitWidth: root.pillWidth + root.shadowInset * 2
+            implicitHeight: root.pillHeight + root.shadowInset * 2
             margins.left: Math.round(Math.max(0, Math.min(modelData.width - width,
                 localX - width / 2)))
             margins.top: Math.round(Math.max(0, Math.min(modelData.height - height,
@@ -102,10 +107,10 @@ Scope {
             // During processing no input is consumed; target field retains
             // keyboard focus and clicks. Ready/error accepts a click on pill.
             mask: Region {
-                x: 16
-                y: 16
-                width: win.canAct ? 112 : 0
-                height: win.canAct ? 42 : 0
+                x: root.shadowInset
+                y: root.shadowInset
+                width: win.canAct ? root.pillWidth : 0
+                height: win.canAct ? root.pillHeight : 0
             }
 
             onOnMonitorChanged: {
@@ -159,8 +164,8 @@ Scope {
             Item {
                 id: pill
                 anchors.centerIn: parent
-                width: 112
-                height: 42
+                width: root.pillWidth
+                height: root.pillHeight
                 opacity: win.revealed ? 1 : 0
                 scale: win.revealed ? 1 : 0.91
 
@@ -171,17 +176,25 @@ Scope {
                     NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
                 }
 
-                Rectangle {
-                    anchors.fill: parent
-                    anchors.margins: -3
-                    radius: 26
-                    color: "#1a000000"
-                    opacity: 0.35
+                // Match Caelestia tooltips and toast cards instead of
+                // approximating their shadow with a dark background rectangle.
+                // Only the shape radius breathes gently; window coordinates
+                // never move while transcription progresses.
+                Elevation {
+                    anchors.fill: surface
+                    radius: surface.radius
+                    level: 3
+                    z: -1
                 }
+
                 Rectangle {
+                    id: surface
                     anchors.fill: parent
-                    radius: 21
+                    radius: root.pillHeight / 2 + 0.7 * Math.sin(root.phase * 0.21)
                     color: Colours.palette.m3surface
+                    border.width: 1
+                    border.color: Qt.alpha(Colours.palette.m3outlineVariant, 0.22)
+                    antialiasing: true
                 }
 
                 TapHandler {
@@ -197,37 +210,45 @@ Scope {
 
                 Row {
                     anchors.centerIn: parent
-                    spacing: root.waitingToSend ? 3 : 4
+                    spacing: root.waitingToSend ? 2 : 3
 
                     Repeater {
                         model: root.waitingToSend ? 15 : 13
 
                         Item {
                             required property int index
-                            readonly property real waveDrift: Math.sin(root.phase * 0.34 + index * 0.23) * 0.16
-                            readonly property real queuedWave: 0.12 + 0.83 *
-                                Math.pow((1 + Math.sin(root.phase + index * 0.88 + waveDrift)) / 2, 1.45) *
-                                (0.86 + 0.14 * Math.sin(root.phase * 0.51 + index * 0.32))
-                            readonly property real processingWave:
-                                0.22 + 0.72 * (Math.sin(root.phase + index * 0.64) + 1) / 2
-                            readonly property real amount: root.waitingToSend ? queuedWave : processingWave
+                            readonly property real centerDistance: Math.abs(index - (root.waitingToSend ? 7 : 6))
+                                / (root.waitingToSend ? 7 : 6)
+                            // Combine two slowly varying phases so adjacent
+                            // bars correlate like a real waveform, without
+                            // periodic symmetrical spikes or harsh jumps.
+                            readonly property real waveDrift:
+                                0.19 * Math.sin(root.phase * 0.25 + index * 0.37)
+                            readonly property real rollingWave:
+                                (1 + Math.sin(root.phase + index * 0.58 + waveDrift)) / 2
+                            readonly property real texture:
+                                (1 + Math.sin(root.phase * 0.43 - index * 0.89)) / 2
+                            readonly property real amount: Math.max(0.12, Math.min(0.97,
+                                (root.waitingToSend ? 0.2 : 0.16) +
+                                (root.waitingToSend ? 0.68 : 0.61) * rollingWave *
+                                (0.76 + 0.24 * texture) * (1 - centerDistance * 0.18)))
 
-                            width: 4
-                            height: 30
+                            width: 3
+                            height: 26
 
                             Rectangle {
                                 anchors.bottom: parent.bottom
                                 anchors.horizontalCenter: parent.horizontalCenter
-                                width: 4
-                                height: 4 + parent.amount * 26
-                                radius: 2
+                                width: 3
+                                height: 3 + parent.amount * (parent.height - 3)
+                                radius: 1.5
                                 color: String(root.ghostJob?.status ?? "") === "error"
                                     ? Colours.palette.m3error
                                     : Colours.palette.m3primary
 
                                 Behavior on height {
                                     NumberAnimation {
-                                        duration: root.waitingToSend ? 65 : 40
+                                        duration: root.waitingToSend ? 74 : 65
                                         easing.type: Easing.OutQuad
                                     }
                                 }

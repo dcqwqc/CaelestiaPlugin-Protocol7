@@ -56,8 +56,10 @@ class WaveformOnlyTests(unittest.TestCase):
     def test_clickthrough_until_result_needs_action(self):
         floating = FLOATING.read_text()
         self.assertIn("mask: Region {", floating)
-        self.assertIn("width: win.canAct ? 112 : 0", floating)
-        self.assertIn("height: win.canAct ? 42 : 0", floating)
+        self.assertIn("width: win.canAct ? root.pillWidth : 0", floating)
+        self.assertIn("height: win.canAct ? root.pillHeight : 0", floating)
+        self.assertIn("x: root.shadowInset", floating)
+        self.assertIn("y: root.shadowInset", floating)
         self.assertIn('String(root.ghostJob?.status ?? "") === "ready"', floating)
         self.assertIn('ghostJob?.retryable === true', floating)
 
@@ -67,8 +69,42 @@ class WaveformOnlyTests(unittest.TestCase):
                         'text: "Transcribing', "historyPane"):
             self.assertNotIn(blocked, floating)
         self.assertIn("model: root.waitingToSend ? 15 : 13", floating)
-        self.assertIn("readonly property real queuedWave", floating)
+        self.assertIn("readonly property real rollingWave", floating)
+        self.assertIn("readonly property real waveDrift", floating)
         self.assertIn("Colours.palette.m3error", floating)
+
+    def test_small_organic_wave_and_native_caelestia_elevation(self):
+        floating = FLOATING.read_text()
+        elevation = (Path.home() / ".config/quickshell/caelestia/components/effects/Elevation.qml").read_text()
+
+        # Smaller actual pill, centred inside symmetric transparent margins:
+        # changing size must not alter target centre or click-through status.
+        self.assertIn("readonly property int pillWidth: 102", floating)
+        self.assertIn("readonly property int pillHeight: 38", floating)
+        self.assertIn("readonly property int shadowInset: 16", floating)
+        self.assertIn("implicitWidth: root.pillWidth + root.shadowInset * 2", floating)
+        self.assertIn("implicitHeight: root.pillHeight + root.shadowInset * 2", floating)
+        self.assertIn("anchors.centerIn: parent", floating)
+
+        # Actual shell Elevation, not a pretend dark outer rectangle.
+        self.assertIn("import qs.components.effects", floating)
+        self.assertIn("Elevation {", floating)
+        self.assertIn("anchors.fill: surface", floating)
+        self.assertIn("radius: surface.radius", floating)
+        self.assertIn("level: 3", floating)
+        self.assertIn("Qt.alpha(Colours.palette.m3outlineVariant, 0.22)", floating)
+        self.assertIn("RectangularShadow {", elevation)
+        self.assertIn("Colours.palette.m3shadow", elevation)
+        self.assertNotIn('color: "#1a000000"', floating)
+
+        # Bar texture and outline are smooth and subtle, not moving the overlay.
+        self.assertIn("0.7 * Math.sin(root.phase * 0.21)", floating)
+        self.assertIn("rollingWave *", floating)
+        self.assertIn("root.phase += root.waitingToSend ? 0.31 : 0.24", floating)
+        self.assertIn("width: 3", floating)
+        self.assertIn("height: 26", floating)
+        self.assertNotIn("Behavior on x", floating)
+        self.assertNotIn("Behavior on y", floating)
 
     def test_send_queue_and_history_remain_in_separate_components(self):
         floating = FLOATING.read_text()
