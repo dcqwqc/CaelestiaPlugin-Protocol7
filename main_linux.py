@@ -10,6 +10,7 @@ from native_bridge import NativeUIBridge
 from control_ipc import ControlServer
 from companion.wake_runtime import WakeRuntime
 from ghost_jobs import GhostJobs
+from enter_intercept import EnterInterceptor
 from ghost_wave import capture_target, hypr_json
 
 
@@ -116,6 +117,7 @@ class Protocol7App:
         self._live_stop = threading.Event()
         self._live_thread = None
         self._dictation_lock = threading.RLock()
+        self.enter_interceptor = EnterInterceptor()
         self._ghost = GhostJobs(self)
         self._recording_target = None
         self.control = ControlServer(self._handle_control_command)
@@ -177,7 +179,10 @@ class Protocol7App:
                 self.ui_manager.hide()
                 log_debug("Ghost recording too short; closed without creating a job")
                 return self._dictation_status()
-            job = self._ghost.enqueue(audio, target, self.hotkey.focus_epoch())
+            job = self._ghost.enqueue(
+                audio, target, self.hotkey.focus_epoch(),
+                getattr(self.hotkey, "non_enter_focus_epoch", lambda: None)(),
+            )
             self.ui_manager.hide()
             if job is None:
                 # Never discard a full recording silently on queue saturation.
@@ -253,6 +258,8 @@ class Protocol7App:
             if action == "retry":
                 return self._ghost.retry(job_id)
             return {"ok": False, "error": "unsupported action"}
+        if command == "queue-send":
+            return self._ghost.queue_send()
         if command == "status":
             with self._dictation_lock:
                 return self._dictation_status()
@@ -275,6 +282,17 @@ class Protocol7App:
                     return self._toggle_dictation("control-cancel")
                 return self._dictation_status()
         return {"ok": False, "error": "unsupported command"}
+
+    def send_enter(self):
+        """Deliver exactly one Return *after* successful, settled text paste."""
+        try:
+            reply = subprocess.run(
+                ["wtype", "-k", "Return"], capture_output=True,
+                timeout=1.5, env=_clean_child_env(),
+            )
+            return reply.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     def on_hotkey_trigger(self):
         return self._toggle_dictation("hotkey")
@@ -585,6 +603,8 @@ class Protocol7App:
             self.control.stop()
             self.hotkey.stop()
             self.tray.stop()
+            if hasattr(self, "enter_interceptor"):
+                self.enter_interceptor.disarm()
             self.ui_manager.quit()
 
     def quit(self):

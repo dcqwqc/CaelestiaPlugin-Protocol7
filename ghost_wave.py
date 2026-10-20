@@ -152,6 +152,33 @@ def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
             source="focused-field",
         )
 
+    # The ChatGPT/Codex desktop app does not currently expose its composer
+    # via AT-SPI. Its input is bottom-docked, NOT underneath the pointer.
+    # Use the window bottom as a deliberate app-specific fallback. The wave's
+    # centre sits ~20px above the composer top; keep it in the left third,
+    # where the writing area begins (rather than the Send button).
+    cls = str(active.get("class") or "").casefold()
+    if cls in ("chatgpt", "com.openai.chatgpt"):
+        mon = next(
+            (m for m in monitors if isinstance(m, dict) and m.get("id") == active.get("monitor")),
+            None,
+        )
+        at, size = active.get("at"), active.get("size")
+        if mon and isinstance(at, list) and isinstance(size, list) and len(at) == len(size) == 2:
+            origin_x, origin_y, width, height = logical_geometry(mon)
+            win_x, win_y = int(at[0]), int(at[1])
+            win_w, win_h = int(size[0]), int(size[1])
+            if win_w >= 350 and win_h >= 400:
+                return Target(
+                    address=str(active["address"]),
+                    app=str(active.get("class") or ""),
+                    monitor=str(mon.get("name") or ""),
+                    x=max(0, min(width - 1, round(win_x - origin_x + win_w * .26))),
+                    y=max(0, min(height - 1, round(win_y - origin_y + win_h - 146))),
+                    title=str(active.get("title") or "")[:100],
+                    source="composer-fallback",
+                )
+
     # A pointer can be on a *different* monitor than the active app. Anchor
     # location follows the pointer, while insertion safety follows the app.
     selected = None

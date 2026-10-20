@@ -33,6 +33,7 @@ class HotkeyListener:
         self._tap_lock = __import__('threading').Lock()
         self.tap_count = 0
         self._focus_count = 0
+        self._non_enter_focus_count = 0
         self._focus_lock = threading.Lock()
 
         # For multi-key combos
@@ -56,10 +57,17 @@ class HotkeyListener:
         with self._focus_lock:
             return self._focus_count
 
+    def non_enter_focus_epoch(self):
+        """Only actions that may move to a different text input."""
+        with self._focus_lock:
+            return self._non_enter_focus_count
+
     def _record_focus_action(self, code, value):
         if value == 1 and code in (FOCUS_KEYS | POINTER_BUTTONS):
             with self._focus_lock:
                 self._focus_count += 1
+                if code != evdev.ecodes.KEY_ENTER:
+                    self._non_enter_focus_count += 1
 
     def find_pointers(self, keyboard_paths=None):
         keyboards = set(keyboard_paths or [])

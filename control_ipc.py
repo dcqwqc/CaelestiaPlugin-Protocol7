@@ -17,7 +17,7 @@ from typing import Callable
 
 MAX_COMMAND = 64
 MAX_REPLY = 4096
-COMMANDS = {"toggle", "start", "stop", "status"}
+COMMANDS = {"toggle", "start", "stop", "status", "queue-send"}
 JOB_COMMAND = re.compile(r"^(insert|cancel|retry):[a-f0-9]{12}$")
 
 

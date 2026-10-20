@@ -24,7 +24,9 @@ class GhostJob:
     error: str = ""
     cancelled: bool = False
     focus_epoch: int | None = None
+    non_enter_epoch: int | None = None
     attempt: int = 0
+    send_queued: bool = False
     created: float = field(default_factory=time.monotonic)
 
     def public(self):
@@ -33,6 +35,7 @@ class GhostJob:
             "target": self.target.as_public() if self.target else {},
             "preview": self.text[:100] if self.status == "ready" else "",
             "retryable": self.audio is not None and len(self.audio) >= 8000,
+            "sendQueued": self.send_queued,
         }
 
 
@@ -42,7 +45,7 @@ class GhostJobs:
         self.lock = threading.RLock()
         self._paste_lock = threading.Lock()
         self._persist_lock = threading.Lock()
-        self.job_timeout_seconds = 22.0
+        self.job_timeout_seconds = 40.0
         self.ready_visible_seconds = 8.0
         self.error_visible_seconds = 4.0
         self.jobs = OrderedDict()
@@ -137,12 +140,22 @@ class GhostJobs:
         self._persist()
 
     def _publish(self):
-        self.app.ui_manager.set_jobs(self.snapshot())
+        rows = self.snapshot()
+        self.app.ui_manager.set_jobs(rows)
+        hook = getattr(self.app, "enter_interceptor", None)
+        if hook and not any(
+            row["status"] in ("queued", "processing", "inserting", "ready")
+            for row in rows
+        ):
+            hook.disarm()
 
-    def enqueue(self, audio, target=None, focus_epoch=None):
+    def enqueue(self, audio, target=None, focus_epoch=None, non_enter_epoch=None):
         with self.lock:
             busy = sum(j.status in ("queued", "processing") for j in self.jobs.values())
-            job = GhostJob(secrets.token_hex(6), target, audio, focus_epoch=focus_epoch)
+            job = GhostJob(
+                secrets.token_hex(6), target, audio,
+                focus_epoch=focus_epoch, non_enter_epoch=non_enter_epoch,
+            )
             if busy >= 4:
                 job.status = "error"
                 job.error = "Busy processing other recordings"
@@ -153,6 +166,10 @@ class GhostJobs:
                 if oldest.status in ("queued", "processing"):
                     break
                 self.jobs.pop(oldest_id)
+        if job.status == "queued":
+            hook = getattr(self.app, "enter_interceptor", None)
+            if hook and target:
+                hook.arm()
         self._publish()
         if job.status == "queued":
             self.executor.submit(self._run, job)
@@ -220,6 +237,10 @@ class GhostJobs:
 
     def _focus_unchanged(self, job):
         listener = getattr(self.app, "hotkey", None)
+        if job.non_enter_epoch is not None:
+            read = getattr(listener, "non_enter_focus_epoch", None)
+            if read is None or read() != job.non_enter_epoch:
+                return False
         return job.focus_epoch is None or (
             listener is not None and listener.focus_epoch() == job.focus_epoch
         )
@@ -245,6 +266,9 @@ class GhostJobs:
                 ok = self.app.paste_text(text)
                 if ok is False:
                     raise RuntimeError("text insertion failed")
+                # wtype may exit before the app has rendered its input event.
+                # Keep the waveform visible as "inserting" until settled.
+                time.sleep(0.18)
             except Exception as exc:
                 with self.lock:
                     job.status = "ready"
@@ -253,10 +277,35 @@ class GhostJobs:
                 self._persist()
                 return {"ok": False, "error": "insertion failed"}
             with self.lock:
+                # A send is valid only if the original focus survived paste.
+                send = job.send_queued and not job.cancelled and job.target is not None
+                send = bool(send and self._focus_unchanged(job) and
+                            job.target.same_window_active())
                 job.status = "inserted"
+                job.send_queued = False
             self._publish()
             self._persist()
-            return {"ok": True, "inserted": True}
+            if send:
+                # Another background job might still have the global Return
+                # trap armed. Temporarily release it *unconditionally* before
+                # synthesizing Send, or the synthetic Enter could enqueue on
+                # the wrong job instead of reaching the text application.
+                hook = getattr(self.app, "enter_interceptor", None)
+                if hook and not hook.disarm():
+                    return {"ok": False, "inserted": True, "sent": False}
+                sender = getattr(self.app, "send_enter", None)
+                sent = bool(sender()) if sender else False
+                # Keep the next job interceptible if it is still pending.
+                if hook:
+                    with self.lock:
+                        still_pending = any(
+                            j.status in ("queued", "processing", "ready", "inserting")
+                            and not j.cancelled for j in self.jobs.values()
+                        )
+                    if still_pending:
+                        hook.arm()
+                return {"ok": bool(sent), "inserted": True, "sent": bool(sent)}
+            return {"ok": True, "inserted": True, "sent": False}
 
     def dismiss_visible(self):
         """Dismiss floating work atomically; late STT results cannot return.
@@ -267,7 +316,7 @@ class GhostJobs:
         with self.lock:
             visible = [
                 job for job in self.jobs.values()
-                if job.status in ("queued", "processing", "ready", "error")
+                if job.status in ("queued", "processing", "ready", "error", "inserting")
             ]
             if not visible:
                 return False
@@ -278,6 +327,46 @@ class GhostJobs:
         self._publish()
         self._persist()
         return True
+
+    def queue_send(self):
+        """Return was consumed by Hyprland. Never let it hit an empty composer.
+
+        The request is bound to one original active window and only submitted
+        if paste succeeds there; other apps receive their intercepted Return.
+        """
+        hook = getattr(self.app, "enter_interceptor", None)
+        # The control socket must never synthesize Return unless Hyprland has
+        # explicitly intercepted a physical Return for this live job.
+        if hook is not None and not hook.armed:
+            return {"ok": False, "send_queued": False, "error": "Return hook inactive"}
+        dispatch_ready_id = None
+        with self.lock:
+            candidates = [
+                j for j in self.jobs.values()
+                if j.status in ("queued", "processing", "ready", "inserting") and not j.cancelled
+            ]
+            candidates.sort(key=lambda j: j.created, reverse=True)
+            job = next((j for j in candidates if j.target and j.target.same_window_active()), None)
+            if job is not None:
+                listener = getattr(self.app, "hotkey", None)
+                read = getattr(listener, "non_enter_focus_epoch", None)
+                if job.non_enter_epoch is not None and (read is None or read() != job.non_enter_epoch):
+                    job = None
+                else:
+                    job.send_queued = True
+                    if listener:
+                        # Enter itself increments the old focus epoch. Update
+                        # just that counter, NOT the non-Enter focus guard.
+                        job.focus_epoch = listener.focus_epoch()
+                    if job.status == "ready":
+                        dispatch_ready_id = job.id
+                    self._publish()
+        if job is not None:
+            if dispatch_ready_id:
+                self.executor.submit(self.insert, dispatch_ready_id, require_target=True)
+            return {"ok": True, "send_queued": True}
+        forwarded = bool(hook.forward_return()) if hook else False
+        return {"ok": forwarded, "send_queued": False, "forwarded": forwarded}
 
     def cancel(self, job_id):
         with self.lock:

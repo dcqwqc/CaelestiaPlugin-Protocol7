@@ -60,7 +60,7 @@ class GhostJobsTests(unittest.TestCase):
             await_status(manager, "ready")
             self.assertEqual(app.pasted, [])
             self.assertEqual(manager.counts()["ready"], 1)
-            self.assertEqual(manager.insert(job.id), {"ok": True, "inserted": True})
+            self.assertEqual(manager.insert(job.id), {"ok": True, "inserted": True, "sent": False})
             self.assertEqual(app.pasted, ["test dictation"])
 
     def test_same_window_autoinserts_once(self):
@@ -219,6 +219,26 @@ class GhostJobsTests(unittest.TestCase):
         self.assertTrue(entered.wait(1))
         self.assertEqual(manager.snapshot()[0]["id"], new.id)
         hold.set()
+
+    def test_chatgpt_composer_fallback_is_bottom_docked_not_at_pointer(self):
+        active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
+                  "at": [991, 21], "size": [908, 1158]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+            result = capture_target({"x": 1050, "y": 200})
+        self.assertEqual(result.source, "composer-fallback")
+        self.assertEqual((result.x, result.y), (1227, 1033))
+
+    def test_chatgpt_exact_editable_beats_composer_fallback(self):
+        active = {"address": "0xab", "class": "chatgpt", "monitor": 0,
+                  "at": [100, 21], "size": [908, 1100]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        with patch("ghost_wave.focused_rect", return_value=(180, 885, 700, 40)):
+            with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+                result = capture_target({"x": 1000, "y": 250})
+        self.assertEqual((result.x, result.y, result.source), (530, 852, "focused-field"))
 
     def test_selected_input_field_anchors_above_actual_rect_not_mouse(self):
         from ghost_wave import field_anchor
