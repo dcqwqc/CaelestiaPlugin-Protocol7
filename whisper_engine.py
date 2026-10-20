@@ -57,6 +57,30 @@ class WhisperEngine:
                 return
             self._load_local_model_locked()
 
+    @staticmethod
+    def _suspicious_numeric_hallucination(text, audio_data):
+        """Only suppress number-only results when voice activity is absent.
+
+        Spoken codes, dates and quantities remain valid when voice is present.
+        If the VAD is unavailable, fail open rather than discard dictation.
+        """
+        import re
+
+        if not text or not re.fullmatch(r"[\d\s.,:;/%+\-#*()]+", text):
+            return False
+        try:
+            from faster_whisper.vad import VadOptions, get_speech_timestamps
+            segments = get_speech_timestamps(
+                audio_data,
+                VadOptions(threshold=0.35, min_speech_duration_ms=120,
+                           min_silence_duration_ms=350, speech_pad_ms=60),
+                sampling_rate=16000,
+            )
+            return not segments
+        except Exception as error:
+            print(f"Numeric transcription VAD unavailable: {type(error).__name__}")
+            return False
+
     def transcribe(self, audio_data, live=False, allow_local_fallback=True):
         # Reject audio less than 0.5 seconds (at 16000Hz, 0.5s = 8000 samples)
         if len(audio_data) < 8000:
@@ -98,8 +122,14 @@ class WhisperEngine:
                     response_format="json",
                     temperature=0.0,
                 )
+                recognized_text = transcription.text.strip()
+                if self._suspicious_numeric_hallucination(recognized_text, audio_data):
+                    # A quiet/no-speech capture can hallucinate digits. Do not
+                    # silently inject made-up numbers into the user's editor.
+                    print("[Groq Whisper] Rejected number-only non-speech result")
+                    return ""
                 print(f"[Groq Whisper] Internal Transcription took {time.time() - t0:.2f}s")
-                return transcription.text.strip()
+                return recognized_text
             except Exception as e:
                 print(f"Groq transcription failed ({type(e).__name__}); no local substitution.")
                 return ""

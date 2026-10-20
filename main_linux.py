@@ -557,6 +557,11 @@ class Protocol7App:
             if len(clean) >= 64:
                 log_debug("Literal text injection (no clipboard or Ctrl+V)")
 
+            log_debug(
+                f"Text injection method=wtype chars={len(clean)} "
+                f"letters={sum(c.isalpha() for c in clean)} "
+                f"digits={sum(c.isdigit() for c in clean)}"
+            )
             subprocess.run(
                 ["wtype", "--", clean],
                 check=True,
