@@ -47,6 +47,9 @@ class GhostJobsTests(unittest.TestCase):
         self._home_patcher.start()
         self.addCleanup(self._home_patcher.stop)
         self.addCleanup(self._tmp.cleanup)
+        self._field_patcher = patch("ghost_wave.focused_rect", return_value=None)
+        self._field_patcher.start()
+        self.addCleanup(self._field_patcher.stop)
 
     def test_switching_windows_retains_result_without_injection(self):
         app = App()
@@ -216,6 +219,46 @@ class GhostJobsTests(unittest.TestCase):
         self.assertTrue(entered.wait(1))
         self.assertEqual(manager.snapshot()[0]["id"], new.id)
         hold.set()
+
+    def test_selected_input_field_anchors_above_actual_rect_not_mouse(self):
+        from ghost_wave import field_anchor
+        active = {"address": "0xab", "class": "app.zen_browser.zen",
+                  "monitor": 0, "at": [70, 20], "size": [900, 1100]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        rect = (100, 950, 760, 42)
+        self.assertEqual(field_anchor(rect, active, monitors)[1:], (480, 917))
+        with patch("ghost_wave.focused_rect", return_value=rect):
+            with patch("ghost_wave.hypr_json", side_effect=[active, monitors, {"x": 920, "y": 240}]):
+                target = capture_target()
+        self.assertEqual((target.monitor, target.x, target.y), ("eDP-1", 480, 917))
+        self.assertEqual(target.source, "focused-field")
+
+    def test_field_on_scaled_screen_normalizes_physical_geometry(self):
+        from ghost_wave import field_anchor
+        active = {"monitor": 0, "at": [40, 10], "size": [1100, 1000]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 2880, "height": 1800, "scale": 1.5}]
+        # Physical bounding box must be divided to match logical window.
+        self.assertEqual(field_anchor((330, 1200, 1200, 72), active, monitors)[1:],
+                         (620, 767))
+
+    def test_outside_window_focus_rectangle_rejected(self):
+        from ghost_wave import field_anchor
+        active = {"monitor": 0, "at": [60, 20], "size": [800, 800]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 1920, "height": 1080, "scale": 1}]
+        self.assertIsNone(field_anchor((1400, 900, 120, 40), active, monitors))
+
+    def test_accessibility_unavailable_uses_pointer_snapshot(self):
+        active = {"address": "0xab", "class": "zen", "monitor": 0,
+                  "at": [70, 20], "size": [900, 1000]}
+        monitors = [{"id": 0, "name": "eDP-1", "x": 0, "y": 0,
+                     "width": 1920, "height": 1080, "scale": 1}]
+        with patch("ghost_wave.hypr_json", side_effect=[active, monitors]):
+            target = capture_target({"x": 422, "y": 534})
+        self.assertEqual((target.x, target.y), (422, 498))
+        self.assertEqual(target.source, "pointer")
 
     def test_scaled_monitor_coordinates_use_logical_bounds(self):
         active = {"address": "0x1", "class": "zen", "monitor": 1,

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import subprocess
+import sys
 from typing import Optional
 
 
@@ -31,10 +33,12 @@ class Target:
     x: int
     y: int
     title: str = ""
+    source: str = "pointer"
 
     def as_public(self) -> dict:
         # Never expose a window address/title through QML state.
-        return {"monitor": self.monitor, "x": self.x, "y": self.y, "app": self.app}
+        return {"monitor": self.monitor, "x": self.x, "y": self.y, "app": self.app,
+                "source": self.source}
 
     def same_window_active(self) -> bool:
         active = hypr_json("activewindow")
@@ -55,11 +59,68 @@ def logical_geometry(monitor: dict) -> tuple[int, int, int, int]:
     return int(monitor.get("x", 0)), int(monitor.get("y", 0)), width, height
 
 
-def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
-    """Take one *fixed* pointer snapshot at dictation start, not the textbox guess.
+def focused_rect(active: dict) -> tuple[int, int, int, int] | None:
+    """A short bounded AT-SPI geometry read; never reads input content."""
+    script = Path(__file__).with_name("focused_field.py")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), str(active.get("class") or ""),
+             str(active.get("pid") or 0)],
+            capture_output=True, text=True, timeout=0.6, check=True,
+        )
+        rect = json.loads(result.stdout.strip())
+        if (
+            isinstance(rect, list) and len(rect) == 4
+            and all(type(v) is int for v in rect)
+            and 12 <= rect[2] <= 12000 and 12 <= rect[3] <= 12000
+        ):
+            return tuple(rect)
+    except (ValueError, OSError, subprocess.SubprocessError):
+        pass
+    return None
 
-    Once detached, the target stays anchored to the pointer's original location
-    while the user keeps moving the mouse independently.
+
+def field_anchor(rect: tuple[int, int, int, int], active: dict, monitors: list[dict]):
+    """Normalize AT-SPI screen bounds against compositor-logical coordinates.
+
+    Some Wayland AT-SPI providers return pixels and others logical units.
+    Only accept a rect whose center clearly lies inside the active window.
+    """
+    ax, ay = active.get("at") or [0, 0]
+    aw, ah = active.get("size") or [0, 0]
+    mon = next((m for m in monitors if m.get("id") == active.get("monitor")), None)
+    if not mon or aw <= 0 or ah <= 0:
+        return None
+    mx, my, mw, mh = logical_geometry(mon)
+    scale = float(mon.get("scale") or 1)
+    rx, ry, rw, rh = rect
+    # Normalized rectangle candidates: logical global; pixel coords relative
+    # to this monitor with compositor origin; physical global.
+    variants = [
+        (rx, ry, rw, rh),
+        (mx + (rx - mx) / scale, my + (ry - my) / scale, rw / scale, rh / scale),
+        (rx / scale, ry / scale, rw / scale, rh / scale),
+    ]
+    for x, y, w, h in variants:
+        cx = x + w / 2
+        if not (ax - 8 <= cx <= ax + aw + 8):
+            continue
+        if not (ay - 8 <= y <= ay + ah + 8):
+            continue
+        if w > aw + 25 or h > ah + 25:
+            continue
+        # A whole-page/whole-terminal accessible is not a focused text input.
+        if h > ah * .85 and w > aw * .75:
+            continue
+        # Position the pill's *bottom* 12px above the field's top edge.
+        return mon, round(cx - mx), round(y - my - 33)
+    return None
+
+
+def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
+    """Capture the exact focused field when available, else pointer fallback.
+
+    A captured target remains fixed after dictation starts.
     """
     active = hypr_json("activewindow")
     if not isinstance(active, dict) or not active.get("address"):
@@ -73,6 +134,23 @@ def capture_target(pointer_snapshot: object = None) -> Optional[Target]:
         and isinstance(cursor.get("x"), (int, float))
         and isinstance(cursor.get("y"), (int, float))
     )
+
+    # Accessibility is the primary source: exact focused editable geometry.
+    # The cursor snapshot is only a fallback when accessibility isn't exposed.
+    rect = focused_rect(active)
+    anchor = field_anchor(rect, active, monitors) if rect else None
+    if anchor:
+        selected, x, y = anchor
+        origin_x, origin_y, width, height = logical_geometry(selected)
+        return Target(
+            address=str(active["address"]),
+            app=str(active.get("class") or ""),
+            monitor=str(selected.get("name") or ""),
+            x=max(0, min(width - 1, x)),
+            y=max(0, min(height - 1, y)),
+            title=str(active.get("title") or "")[:100],
+            source="focused-field",
+        )
 
     # A pointer can be on a *different* monitor than the active app. Anchor
     # location follows the pointer, while insertion safety follows the app.
