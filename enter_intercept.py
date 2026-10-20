@@ -46,6 +46,22 @@ def no_existing_unmodified_return() -> bool:
         return False
 
 
+def unmodified_return_installed() -> bool:
+    """Confirm the compositor accepted our unmodified Return binding."""
+    result = run_hypr("binds", "-j")
+    if result is None or result.returncode != 0:
+        return False
+    try:
+        return any(
+            item.get("modmask") == 0
+            and str(item.get("key", "")).casefold() == "return"
+            and item.get("dispatcher") == "__lua"
+            for item in json.loads(result.stdout)
+        )
+    except (ValueError, TypeError):
+        return False
+
+
 class EnterInterceptor:
     def __init__(self):
         self.lock = threading.RLock()
@@ -82,6 +98,9 @@ class EnterInterceptor:
             script = f'hl.bind("Return", hl.dsp.exec_cmd({json.dumps(command)}))'
             if not lua_eval(script):
                 return False
+            if not unmodified_return_installed():
+                lua_eval('hl.unbind("Return")')
+                return False
             try:
                 descriptor = os.open(self.owner, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                 with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -104,7 +123,6 @@ class EnterInterceptor:
         with self.lock:
             if not self.armed:
                 return True
-            self.armed = False
             try:
                 data = json.loads(self.owner.read_text())
                 if data.get("token") != self.token:
@@ -113,7 +131,10 @@ class EnterInterceptor:
                 return False
             ok = lua_eval('hl.unbind("Return")')
             if ok:
+                self.armed = False
                 self.owner.unlink(missing_ok=True)
+            # On failure, retain armed=True. Do not report a safe keyboard
+            # state while Hyprland is still swallowing physical Returns.
             return ok
 
     def forward_return(self):
@@ -133,8 +154,10 @@ class EnterInterceptor:
 
 def watchdog(token: str, parent_pid: int):
     owner = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "protocol7-return-owner.json"
-    until = time.monotonic() + 50
-    while time.monotonic() < until:
+    # Keep the crash monitor alive as long as the owning backend is alive;
+    # the previous fixed 50-second deadline silently removed Return for an
+    # otherwise valid, still processing dictation.
+    while True:
         time.sleep(.15)
         try:
             saved = json.loads(owner.read_text())

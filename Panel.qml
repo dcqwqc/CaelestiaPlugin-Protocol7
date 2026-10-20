@@ -95,7 +95,9 @@ Item {
         interval: 28
         repeat: true
         running: root.panelVisible
-        onTriggered: root.phase += root.waitingToSend ? 0.78 : (root.panelDetached ? 0.36 : 0.19)
+        // Queued send has a more energetic but still organic rhythm.
+        // Avoid the old high-frequency spikes that looked mechanical.
+        onTriggered: root.phase += root.waitingToSend ? 0.38 : (root.panelDetached ? 0.32 : 0.19)
     }
 
     // The history is deliberately absent when detached. No status bubble
@@ -201,20 +203,22 @@ Item {
 
         Row {
             anchors.centerIn: parent
-            spacing: root.waitingToSend ? 2 : (root.panelDetached ? 4 : 6)
+            spacing: root.waitingToSend ? 3 : (root.panelDetached ? 4 : 6)
 
             Repeater {
-                model: root.waitingToSend ? 17 : (root.panelDetached ? 13 : 9)
+                model: root.waitingToSend ? 15 : (root.panelDetached ? 13 : 9)
 
                 Item {
                     required property int index
-                    readonly property real centerIndex: root.waitingToSend ? 8 : (root.panelDetached ? 6 : 4)
+                    readonly property real centerIndex: root.waitingToSend ? 7 : (root.panelDetached ? 6 : 4)
                     readonly property real voiceWeight: Math.max(0.45, 1 - Math.abs(index - centerIndex) / centerIndex * 0.48)
                     readonly property real processingWave: 0.22 + 0.72 * (Math.sin(root.phase + index * 0.64) + 1) / 2
                     readonly property real liveTexture: 0.78 + 0.22 * (Math.sin(root.phase + index * 0.91) + 1) / 2
                     readonly property real liveLevel: Math.pow(Math.max(0, P7.ProtocolState.level), 0.72)
-                    readonly property real queuedWave: 0.12 + 0.88 *
-                        Math.pow(Math.max(0, Math.sin(root.phase + index * 1.08)), 2.5)
+                    readonly property real waveDrift: Math.sin(root.phase * 0.34 + index * 0.23) * 0.16
+                    readonly property real queuedWave: 0.12 + 0.83 *
+                        Math.pow((1 + Math.sin(root.phase + index * 0.88 + waveDrift)) / 2, 1.45) *
+                        (0.86 + 0.14 * Math.sin(root.phase * 0.51 + index * 0.32))
                     readonly property real amount: root.waitingToSend ? queuedWave : root.panelDetached
                         ? processingWave
                         : Math.max(0.055, Math.min(1, liveLevel * voiceWeight * liveTexture))
@@ -232,7 +236,7 @@ Item {
                         opacity: 0.94
 
                         Behavior on height {
-                            NumberAnimation { duration: 26; easing.type: Easing.OutQuad }
+                            NumberAnimation { duration: root.waitingToSend ? 65 : 26; easing.type: Easing.OutQuad }
                         }
                     }
                 }

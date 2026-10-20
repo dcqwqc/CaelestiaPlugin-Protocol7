@@ -111,6 +111,42 @@ class QueueSendTests(unittest.TestCase):
             self.assertTrue(self.app.enter_interceptor.armed)
             release.set()
 
+    def test_enter_listener_event_after_queue_command_is_not_focus_change(self):
+        started, release = threading.Event(), threading.Event()
+        def transcribe(_):
+            started.set()
+            release.wait(2)
+            return "go!"
+        self.app.whisper_engine.transcribe = transcribe
+        with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
+            job = self.manager.enqueue(np.ones(16000, dtype=np.float32), self.target, 10, 3)
+            self.assertTrue(started.wait(1))
+            # IPC can run before evdev's focus counter observes the key.
+            self.assertTrue(self.manager.queue_send()["send_queued"])
+            self.app.hotkey.count = 11
+            release.set()
+            until(lambda: bool(self.app.sends))
+            self.assertEqual(len(self.app.pastes), 1)
+            self.assertEqual(self.app.sends[0][1:], (1, False))
+            self.assertEqual(job.status, "inserted")
+
+    def test_actual_focus_change_after_queued_enter_blocks_auto_send(self):
+        started, release = threading.Event(), threading.Event()
+        def transcribe(_):
+            started.set()
+            release.wait(2)
+            return "do not send"
+        self.app.whisper_engine.transcribe = transcribe
+        with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
+            job = self.manager.enqueue(np.ones(16000, dtype=np.float32), self.target, 10, 3)
+            self.assertTrue(started.wait(1))
+            self.manager.queue_send()
+            self.app.hotkey.non_enter += 1  # user clicked another textbox
+            release.set()
+            until(lambda: job.status == "ready")
+            self.assertEqual(self.app.pastes, [])
+            self.assertEqual(self.app.sends, [])
+
     def test_enter_during_insertion_queues_single_send(self):
         entered, resume = threading.Event(), threading.Event()
         def slow_paste(text):

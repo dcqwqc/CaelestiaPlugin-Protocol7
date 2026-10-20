@@ -241,6 +241,11 @@ class GhostJobs:
             read = getattr(listener, "non_enter_focus_epoch", None)
             if read is None or read() != job.non_enter_epoch:
                 return False
+            if job.send_queued:
+                # A captured Return may arrive at the evdev listener before or
+                # after its IPC command. That must never invalidate a queued
+                # send: only non-Return focus actions may do so.
+                return True
         return job.focus_epoch is None or (
             listener is not None and listener.focus_epoch() == job.focus_epoch
         )
