@@ -451,16 +451,21 @@ class Protocol7App:
             return False
 
     def _active_paste_command(self):
-        """Use uinput on SUMI; preserve the old wtype path for other GUI apps."""
+        """Use the stable hardware-equivalent uinput paste shortcut."""
         import os
         import shutil
-        if self._focused_is_sumi() and shutil.which("ydotool"):
+        if shutil.which("ydotool"):
             sock = f"/run/user/{os.getuid()}/.ydotool_socket"
             if os.path.exists(sock):
+                if self._focused_is_terminal():
+                    # Terminals use Ctrl+Shift+V, not Ctrl+V.
+                    return ["ydotool", "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
                 return ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"]
-        return ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"]
+        # Never fall back to wtype: this compositor reinterprets its
+        # per-call keymap as digits in XWayland/Electron applications.
+        raise RuntimeError("Hardware keyboard injection unavailable (ydotoold not running)")
 
-    def _fast_clipboard_paste(self, text):
+    def _fast_clipboard_paste(self, text, *, allow_terminal=False):
         """Paste a long transcript atomically, then restore the previous clipboard.
 
         Long virtual-keyboard strings are inherently O(characters) and were
@@ -468,7 +473,7 @@ class Protocol7App:
         constant-time while short utterances still keep the visible typing
         effect through wtype.
         """
-        if self._focused_is_terminal():
+        if self._focused_is_terminal() and not allow_terminal:
             return False
 
         env = _clean_child_env()
@@ -527,7 +532,7 @@ class Protocol7App:
             # restore the existing selection, even if the key injection failed.
             if copied_ok and previous is not None:
                 import time
-                time.sleep(0.22)
+                time.sleep(0.65 if allow_terminal else 0.22)
                 mime, data = previous
                 try:
                     subprocess.run(
@@ -540,37 +545,37 @@ class Protocol7App:
     def paste_text(self, text):
         clean = text.replace(chr(13), " ").replace(chr(10), " ")
         try:
-            # Preserve the satisfying typing animation for short phrases. For
-            # longer dictations use an atomic clipboard paste: this removes the
-            # per-character cost that made a ~500-character utterance take ~3s.
-            # A text editor (including Codex/Claude frontends) may fetch the
-            # clipboard after Ctrl+V returns. Restoring an earlier image can
-            # therefore turn a long dictation into an "image paste" attempt.
-            # Inject literal characters for every normal app and terminal:
-            # never touch the clipboard, regardless of transcription length.
-            # SUMI is the only existing exception: its embedded editor needs
-            # the hardware-equivalent clipboard paste path.
+            # Prefer real keycodes without touching the clipboard for ordinary
+            # ASCII, regardless of length. Use text-only clipboard paste for
+            # SUMI's embedded editor and Unicode unsupported by ydotool.
             if self._focused_is_sumi() and self._fast_clipboard_paste(clean):
                 return True
 
-            safe_timeout = max(8.0, min(90.0, 5.0 + len(clean) * 0.06))
-            if len(clean) >= 64:
-                log_debug("Literal text injection (no clipboard or Ctrl+V)")
+            # ydotool emits regular kernel uinput keycodes, avoiding wtype's
+            # transient Wayland keymap. Verified on this host: wtype produced
+            # "5q2w" for alphabetic text; ydotool matched the entire phrase.
+            # ydotool cannot represent arbitrary Unicode (umlauts, CJK,
+            # emoji). Use an explicitly text-only clipboard transfer then.
+            if not clean.isascii():
+                log_debug("Text injection method=clipboard-unicode")
+                return self._fast_clipboard_paste(clean, allow_terminal=True)
 
+            safe_timeout = max(8.0, min(90.0, 5.0 + len(clean) * 0.03))
             log_debug(
-                f"Text injection method=wtype chars={len(clean)} "
+                f"Text injection method=ydotool chars={len(clean)} "
                 f"letters={sum(c.isalpha() for c in clean)} "
                 f"digits={sum(c.isdigit() for c in clean)}"
             )
             subprocess.run(
-                ["wtype", "--", clean],
+                ["ydotool", "type", "-d", "3", "-H", "3", "-f", "-"],
+                input=clean.encode("utf-8"),
                 check=True,
                 timeout=safe_timeout,
                 env=_clean_child_env(),
             )
             return True
         except Exception as error:
-            log_debug(f"Error pasting text with wtype: {error}")
+            log_debug(f"Text injection failed ({type(error).__name__}): {error}")
             return False
 
     def run(self):
