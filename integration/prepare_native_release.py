@@ -81,7 +81,7 @@ def verify_manifest(repo: Path, m: dict, profile: str) -> list[str]:
                 raise ValueError(f"{repo.name}: missing settings component {m[field]}")
     return declared
 
-def build(root: Path, output: Path, profile: str, expected: int = 32) -> dict:
+def build(root: Path, output: Path, profile: str, expected: int = 33) -> dict:
     root = root.resolve(strict=True)
     output = output.absolute()
     if output.exists() or output.is_symlink():
