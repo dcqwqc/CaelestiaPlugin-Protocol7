@@ -78,6 +78,9 @@ class CandidateBuilderTests(unittest.TestCase):
         outside = self.base / "private-data"
         outside.write_text("DO_NOT_PACKAGE")
         (root / "leak").symlink_to(outside)
+        # Only tracked files are eligible for packaging. Test a tracked escape.
+        subprocess.run(["git", "-C", str(root), "add", "leak"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "add external link"], check=True)
         output = self.base / "external-link"
         with self.assertRaises(ValueError):
             build(self.sources, output, "upstream", expected=1)

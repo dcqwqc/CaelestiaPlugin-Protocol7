@@ -1,6 +1,6 @@
 # Caelestia Native Plugin Development Migration — 21 October 2026
 
-This index tracks **32 active plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
+This index tracks **32 enabled plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
 
 ## Shared integration
 
@@ -43,19 +43,19 @@ This index tracks **32 active plugin repositories**. Original default branches a
 | [WindowBoard](https://github.com/dcqwqc/CaelestiaPlugin-WindowBoard/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged; legacy shell panel needs adapter | Static source-file paths verified; runtime untested |
 | [WorkspaceGrid](https://github.com/dcqwqc/CaelestiaPlugin-WorkspaceGrid/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged | Static source-file paths verified; runtime untested |
 
-## Added local plugin repositories and staged verification
 
-Three existing Mirai plugins were imported into separate private GitHub repositories with the original main branches preserved and development branches created:
+| [BatteryOptimizer](https://github.com/dcqwqc/CaelestiaPlugin-BatteryOptimizer/tree/feat/upstream-plugin-dev-20261021) | New private repository, native manifest staged | Original main preserved; Backend.qml host adapter needed upstream |
+| [PowerBank](https://github.com/dcqwqc/CaelestiaPlugin-PowerBank/tree/feat/upstream-plugin-dev-20261021) | New private repository, native manifest staged | Original main preserved; batteryTank slot host needed upstream |
+| [VolumeThumbMute](https://github.com/dcqwqc/CaelestiaPlugin-VolumeThumbMute/tree/feat/upstream-plugin-dev-20261021) | New private repository, native manifest staged | Original main preserved; OSD slot host needed upstream |
 
-| Plugin | Migration |
-|---|---|
-| [BatteryOptimizer](https://github.com/dcqwqc/CaelestiaPlugin-BatteryOptimizer/tree/feat/upstream-plugin-dev-20261021) | Custom Backend.qml needs one-time host |
-| [PowerBank](https://github.com/dcqwqc/CaelestiaPlugin-PowerBank/tree/feat/upstream-plugin-dev-20261021) | batteryTank custom slot needs upstream host |
-| [VolumeThumbMute](https://github.com/dcqwqc/CaelestiaPlugin-VolumeThumbMute/tree/feat/upstream-plugin-dev-20261021) | OSD custom slot needs upstream host |
+## Verified release candidates — 21 October 2026
 
-All 32 GitHub PRs have manifest validation checks. Isolated fork and upstream candidate assemblies contain 32 unique plugin IDs. The fork candidate on Mirai passed identity and SHA-256 validation and 110/110 QML parses without changing its active installation. Additional checks: Loom 341 tests (3 environmental skips), RemoteDesktop 48 tests, Protocol7 8 visual-structure tests. Full Protocol7 audio tests are unverified because the standalone test environment lacks Python audio dependencies.
-
-The release builder packages Git-tracked source files only and tests refusal to copy untracked files or external symlinks. Nothing has been deployed into the live plugin directories; Mirai has active local edits that must be reconciled. Tachibana was unreachable during the audit.
+- All **32** enabled plugins now have private or existing GitHub repositories, migration branches, draft pull requests and **passing manifest CI**.
+- All 32 are cloned in an isolated Philipedia workspace. Release packager at [prepare_native_release.py](./prepare_native_release.py) produces an upstream-development profile and a fork-compatible profile without touching live installations. Safety unit tests cover overwrite refusal, dirty working trees, symlink escape, duplicate plugin identity and legacy panel preservation.
+- The **fork-compatible 32-plugin candidate** is staged on Mirai at `~/.cache/caelestia-native-migration/release-fork-32-20261021`, outside the live plugin loader roots. It has **109 of 109 QML files parse successfully** using Qt 6.11.2 `qmlformat --ignore-settings` in read-only mode.
+- This is **not an activated deployment**. Mirai has local or newer plugin differences (including Loom, Color, TabletMode, PhoneMirror, Devices and other plugins), and its shell worktree has approximately 60 uncommitted changes. Overwriting those would violate non-destructive migration.
+- Tachibana SSH remains unavailable, so its live state cannot be verified. Upstream official PR #1703 is still open/unmerged.
+- Native upstream integration still lacks custom slot hosting and the legacy shell-panel host; the fork already contains those UI hooks. The two profiles must not be confused.
 
 ## Hard blockers and remaining work
 
@@ -66,3 +66,13 @@ The release builder packages Git-tracked source files only and tests refusal to 
 5. **Deployment:** no access-confirmed staged install, service restart or tested automatic rollback on Mirai/Tachibana. Do not replace the running shell or its plugin directory based on static checks alone.
 
 **Acceptance standard:** Each plugin must have a stable one-time initialization behavior, correct visible placement, persistent settings, verified enable/disable and reload, and verified rollback. A green manifest-only workflow is insufficient proof of this.
+
+## Additional package security verification
+
+The release builder now selects Git-tracked files only; locally untracked caches,
+credentials, generated state, and uncommitted additions are excluded from the
+candidate even if present in a developer checkout. A second regression test suite
+verifies profile preservation, overwrite refusal, duplicate identity rejection,
+and rejection of symlink escapes. No working plugin directory is overwritten.
+Mirai staged verification passed 32/32 manifest identities, 32/32 SHA-256 checks,
+and 110/110 QML syntax parses. The live plugin installation remains untouched.
