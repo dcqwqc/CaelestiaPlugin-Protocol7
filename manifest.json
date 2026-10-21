@@ -9,19 +9,9 @@
     {
       "type": "custom",
       "source": "entry/Main.qml"
-    },
-    {
-      "type": "shell-panel",
-      "source": "Panel.qml",
-      "properties": {
-        "edge": "bottom",
-        "alignment": "center",
-        "interactive": true,
-        "deformAmount": 0.03,
-        "motionDuration": 180
-      }
     }
   ],
   "settings": "Settings.qml",
-  "settingsUi": "SettingsUi.qml"
+  "settingsUi": "SettingsUi.qml",
+  "requires": ">=2.1.0"
 }
