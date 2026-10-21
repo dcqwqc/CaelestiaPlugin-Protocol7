@@ -16,7 +16,7 @@ PageBase {
 
     // Source of truth: the native loader, not example catalog records.
     // Explicit catalog/network installation is intentionally out of scope.
-    readonly property var installedPlugins: Plugins.plugins
+    readonly property var installedPlugins: Plugins.plugins.filter(p => p.valid)
     readonly property var problemPlugins: Plugins.plugins.filter(p => !p.valid)
 
     title: qsTr("Plugins")
