@@ -1,0 +1,27 @@
+{
+  "name": "Protocol7",
+  "version": "1.0.0",
+  "author": "dcqwqc",
+  "homepage": "https://github.com/dcqwqc/CaelestiaPlugin-Protocol7",
+  "icon": "mic",
+  "description": "Fast voice dictation with shared Groq/local Whisper, plus Loom wake-word recognition. The Loom assistant itself is a separate plugin.",
+  "entryPoints": [
+    {
+      "type": "custom",
+      "source": "entry/Main.qml"
+    },
+    {
+      "type": "shell-panel",
+      "source": "Panel.qml",
+      "properties": {
+        "edge": "bottom",
+        "alignment": "center",
+        "interactive": true,
+        "deformAmount": 0.03,
+        "motionDuration": 180
+      }
+    }
+  ],
+  "settings": "Settings.qml",
+  "settingsUi": "SettingsUi.qml"
+}

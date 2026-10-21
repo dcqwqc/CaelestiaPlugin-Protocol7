@@ -53,6 +53,9 @@ Item {
     readonly property real panelDeformAmount: 0.03
     readonly property int panelMotionDuration: 0
     readonly property bool panelGlideMotion: false
+    // Let ShellPanels follow the width animation without a second, slower
+    // x animation. Both pill and history must stay fixed at screen centre.
+    readonly property bool panelLockHorizontalCenter: true
 
     implicitWidth: panelDetached ? 112 : (expanded ? 376 : 112)
     implicitHeight: panelDetached ? 42 : (expanded ? 318 : 32)
