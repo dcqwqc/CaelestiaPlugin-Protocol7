@@ -1,13 +1,25 @@
 # Caelestia Native Plugin Development Migration — 21 October 2026
 
-This index tracks **32 enabled plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
+This index tracks **32 enabled plugin repositories**. The original production entry point contracts were preserved during migration. Branch-level development work was first isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
+
+## Finalized fork-compatible release — 21 October 2026
+
+**All 32 plugin migration pull requests were merged into their repositories' default branches**, after verifying that the default `manifest.json` retained its working Caelestia fork contract. Each repository also contains `manifest.native-dev.json` for the experimental upstream API. Loom, Protocol7, PhoneMirror and WindowBoard retain their native `shell-panel` entries on the default path. GitHub verification checked all 32 merged PRs and both default-branch manifest files in each repository.
+
+**Deployed:** Both Mirai and Tachibana are running the 32-plugin, fork-compatible, locally reconciled release with 32/32 managed paths active and original installation backups retained. Mirai has 33 enabled plugin entries including its separately managed Home plugin; Tachibana retains 25 enabled plugin selections. Critical Loom, Protocol7, Nexus, WindowBoard and Drawers IPC checks passed on both devices after reload. The source/rollback record is in [DEPLOYMENT_20261021.md](./DEPLOYMENT_20261021.md).
+
+**Not completed:** The official upstream shell PR #1703 still requires its missing private panel/slot hosts and comprehensive runtime tests. The live per-device overlay preserves local modifications, so automatic Git updates may skip the managed copies until those diffs are reconciled into versioned source. Do not delete existing backups or replace the running fork with upstream development based on manifest checks alone.
+
+---
+
+## Historical preparation and migration audit (superseded by final release status above)
 
 ## Shared integration
 
 - [Backend custom entry-point singleton host](./experimental-shell-custom-host.patch): GitHub Actions verified that this patch applies cleanly and reverses against upstream development commit `4e288c54a3b039154d19fe8a2064a174eb634405`.
 - [Real installed-plugin page preview](./nexus/PluginsPage.qml): replaces fake plugin cards with the loader's `Plugins.plugins`, shows manifest issues, and enables native enable/disable actions. GitHub Actions verified the file can replace the pinned upstream page with no diff-whitespace errors. **Not QML runtime tested.**
 - [Integration test and rollback instructions](./README.md).
-- [Protocol 7 draft review PR](https://github.com/dcqwqc/CaelestiaPlugin-Protocol7/pull/2): integration CI exercised here, no merge or deployment.
+- [Protocol 7 merged review PR](https://github.com/dcqwqc/CaelestiaPlugin-Protocol7/pull/2): integration CI exercised and merged into the repository default branch.
 
 ## Individual plugin migration status
 
@@ -63,7 +75,7 @@ This index tracks **32 enabled plugin repositories**. Original default branches 
 2. **Custom placement hooks:** `properties.slot` dashboard cards, calendar markers and specialized overlays require real host integration. The backend host intentionally does not load them into an invisible component.
 3. **Plugin manager installation/update:** upstream's registry/store, install, GitHub update and auto-update paths are not yet implemented. The preview UI does not pretend they work.
 4. **Dynamic tests:** isolated Quickshell/Qt build with actual plugin autostart, disable/reload, settings and device functionality, multi-monitor/fullscreen behavior, and graphics rendering.
-5. **Deployment:** no access-confirmed staged install, service restart or tested automatic rollback on Mirai/Tachibana. Do not replace the running shell or its plugin directory based on static checks alone.
+5. **Deployment (completed after this historical audit):** a staged, rollback-protected fork-compatible release was activated and verified on Mirai and Tachibana; see the finalization section and deployment record above.
 
 **Acceptance standard:** Each plugin must have a stable one-time initialization behavior, correct visible placement, persistent settings, verified enable/disable and reload, and verified rollback. A green manifest-only workflow is insufficient proof of this.
 
@@ -75,11 +87,11 @@ candidate even if present in a developer checkout. A second regression test suit
 verifies profile preservation, overwrite refusal, duplicate identity rejection,
 and rejection of symlink escapes. No working plugin directory is overwritten.
 Mirai staged verification passed 32/32 manifest identities, 32/32 SHA-256 checks,
-and 110/110 QML syntax parses. The live plugin installation remains untouched.
+and 110/110 QML syntax parses. At the time of the staging audit, the live installation had not yet been switched; it was subsequently deployed as described above.
 
 
 ## Disabled experimental plugin outside the enabled set
 
-The latest Mirai inventory contains **33 installed plugin directories, of which 32 are enabled**. The additional installed plugin is **dcqwqc/Home**, an independently released Home OS dashboard tab from the separate Home project. It is **not enabled**, has a valid dashboard-tab manifest and its Home.qml parsed successfully. It is not part of the 32 active CaelestiaPlugin repository migrations and must not be silently treated as missing or overwritten. Coordinate updates through its own project and release process.
+An earlier Mirai inventory contained 33 installed directories, with 32 enabled at that time. The most recent post-deployment read showed 33 enabled entries, including Home. The additional installed plugin is **dcqwqc/Home**, an independently released Home OS dashboard tab from the separate Home project. It is **not enabled**, has a valid dashboard-tab manifest and its Home.qml parsed successfully. It is not part of the 32 active CaelestiaPlugin repository migrations and must not be silently treated as missing or overwritten. Coordinate updates through its own project and release process.
 
-The Mirai read-only preflight reports **10 modified plugin worktrees** and **63 local shell changes**. Source snapshots must not overwrite these files. Tachibana did not respond to SSH during this verification. The current release artifacts remain staged and unactivated.
+The Mirai read-only preflight reports **10 modified plugin worktrees** and **63 local shell changes**. Source snapshots must not overwrite these files. At the time of this preflight Tachibana was temporarily unreachable. It subsequently reconnected and both devices were deployed and verified with their original backups retained.
