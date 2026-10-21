@@ -27,6 +27,29 @@ below.
 No live paid speech-to-text service was called during validation. No timing,
 latency, or accuracy measurements were collected. This note claims none.
 
+## Validator isolation
+
+The default Debian system Python on the validation host does not include
+NumPy, and it is not modified. Instead, an offline, private virtual
+environment containing NumPy 2.5.3 is mounted read-only into a Bubblewrap
+validator that has no network access.
+
+An earlier review attempt kept this virtual environment outside the sandbox.
+It failed because the environment's Python executable was not accessible from
+inside the sandbox. This was an environment failure, not a test result.
+
+A newly configured Fleet reviewer, independent of any third-party service,
+will rerun the syntax checks, the 41 streaming mock tests, and this
+documentation review against the entire existing feature branch
+`feature/live-transcription-20261021`. This note claims no outcome for that
+rerun until it is recorded.
+
+This setup does not change the deployment status. There is no production
+deployment, no paid streaming API usage, and no claim about live endpoint
+latency or accuracy. Passing code tests do not prove physical behavior. Real
+microphone acceptance on Mirai and Tachibana (G5 and G6) is still needed. A
+private validator environment also does not satisfy G2.
+
 ## Behavior covered by the passing tests
 
 1. **Incremental partial transcripts.** While capture is active, partial
