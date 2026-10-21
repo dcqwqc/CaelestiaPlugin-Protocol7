@@ -71,10 +71,14 @@ def focused_is_sumi() -> bool:
 
 
 def type_text(text: str) -> bool:
+    """Use persistent kernel keyboard codes; never wtype's transient keymap."""
+    if not text.isascii():
+        return clipboard_paste(text)
     try:
         subprocess.run(
-            ["wtype", "--", text], check=True,
-            timeout=max(8, min(90, 5 + len(text) * 0.06)),
+            ["ydotool", "type", "-d", "3", "-H", "3", "-f", "-"],
+            input=text.encode("utf-8"), check=True,
+            timeout=max(8, min(90, 5 + len(text) * 0.03)),
             env=child_env(),
         )
         return True
@@ -111,8 +115,10 @@ def clipboard_paste(text: str) -> bool:
         if copied.returncode != 0:
             return False
         changed = True
+        keys = (["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
+                if is_terminal() else ["29:1", "47:1", "47:0", "29:0"])
         result = subprocess.run(
-            ["wtype", "-M", "ctrl", "-k", "v", "-m", "ctrl"],
+            ["ydotool", "key", *keys],
             timeout=1.5, env=env,
         )
         return result.returncode == 0

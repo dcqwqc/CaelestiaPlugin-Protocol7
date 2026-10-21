@@ -142,13 +142,13 @@ class EnterInterceptor:
         if not self.disarm():
             return False
         try:
-            subprocess.Popen(
-                ["wtype", "-k", "Return"], env=os.environ.copy(),
+            result = subprocess.run(
+                ["ydotool", "key", "28:1", "28:0"], env=os.environ.copy(),
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, start_new_session=True,
+                stderr=subprocess.DEVNULL, timeout=1.5,
             )
-            return True
-        except OSError:
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
             return False
 
 

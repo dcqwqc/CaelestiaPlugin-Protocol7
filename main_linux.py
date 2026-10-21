@@ -287,7 +287,7 @@ class Protocol7App:
         """Deliver exactly one Return *after* successful, settled text paste."""
         try:
             reply = subprocess.run(
-                ["wtype", "-k", "Return"], capture_output=True,
+                ["ydotool", "key", "28:1", "28:0"], capture_output=True,
                 timeout=1.5, env=_clean_child_env(),
             )
             return reply.returncode == 0

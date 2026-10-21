@@ -16,6 +16,9 @@ with os.fdopen(fd, 'r') as f:
         if text:
             try:
                 # User prefers the typing animation for all text lengths
-                subprocess.run(["wtype", text], check=True)
+                # Legacy FIFO consumers also use the stable keyboard path.
+                from history_actions import type_text
+                if not type_text(text):
+                    print("Protocol7: keyboard injection failed", flush=True)
             except (OSError, subprocess.CalledProcessError) as error:
-                print(f"Protocol7: wtype failed: {error}", flush=True)
+                print(f"Protocol7: keyboard injection failed: {error}", flush=True)
