@@ -34,3 +34,19 @@ jobs:
               if key in data: check_file(data[key])
           print(f"Validated {path} ({data['author']}/{data['name']})")
           PY
+
+  shell-host-compat:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check custom backend host patch against pinned upstream development commit
+        run: |
+          git clone --quiet https://github.com/caelestia-dots/shell.git upstream
+          git -C upstream checkout --quiet --detach 4e288c54a3b039154d19fe8a2064a174eb634405
+          git -C upstream apply --check ../integration/experimental-shell-custom-host.patch
+          git -C upstream apply ../integration/experimental-shell-custom-host.patch
+          git -C upstream diff --check
+          git -C upstream apply --reverse --check ../integration/experimental-shell-custom-host.patch
+          echo "Experimental shell host patch applies cleanly and can be reverted."
