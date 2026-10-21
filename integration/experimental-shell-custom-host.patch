@@ -47,7 +47,7 @@ diff --git a/shell.qml b/shell.qml
 +                // Legacy slot widgets/overlays need their specific host and must not
 +                // become orphaned, invisible visual objects in this backend host.
 +                return !ep.properties?.slot
-+                    && (source === "Main.qml" || source.endsWith("/Main.qml"));
++                    && (source === "Main.qml" || source.endsWith("/Main.qml")\n+                        || source.endsWith("/Backend.qml"));
 +            })
 +
 +            delegate: EntryPointLoader {
