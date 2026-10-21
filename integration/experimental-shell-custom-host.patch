@@ -1,7 +1,7 @@
 diff --git a/shell.qml b/shell.qml
 --- a/shell.qml
 +++ b/shell.qml
-@@ -1,43 +1,72 @@
+@@ -1,43 +1,73 @@
  //@ pragma Env QS_CRASHREPORT_URL=https://github.com/caelestia-dots/shell/issues/new?template=crash.yml
  //@ pragma DefaultEnv QS_NO_RELOAD_POPUP=1
  //@ pragma DefaultEnv QS_DROP_EXPENSIVE_FONTS=1
@@ -47,7 +47,8 @@ diff --git a/shell.qml b/shell.qml
 +                // Legacy slot widgets/overlays need their specific host and must not
 +                // become orphaned, invisible visual objects in this backend host.
 +                return !ep.properties?.slot
-+                    && (source === "Main.qml" || source.endsWith("/Main.qml")\n+                        || source.endsWith("/Backend.qml"));
++                    && (source === "Main.qml" || source.endsWith("/Main.qml")
++                        || source.endsWith("/Backend.qml"));
 +            })
 +
 +            delegate: EntryPointLoader {
