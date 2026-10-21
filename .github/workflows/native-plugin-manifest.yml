@@ -67,3 +67,12 @@ jobs:
           grep -Fq 'Plugins.setPluginEnabled' upstream/modules/nexus/pages/PluginsPage.qml
           if grep -Fq 'Example plugin' upstream/modules/nexus/pages/PluginsPage.qml; then exit 1; fi
           echo 'Native plugin-manager page preview has no placeholder plugin records.'
+
+  release-packager:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify fork/upstream release safety and rollback invariants
+        run: python3 -m unittest integration/test_prepare_native_release.py -v
