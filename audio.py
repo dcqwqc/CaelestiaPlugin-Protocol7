@@ -16,6 +16,10 @@ class AudioRecorder:
         # transcription when recording stops.
         self._recording_chunks = []
         self._chunks_lock = threading.Lock()
+        # Optional non-blocking consumer for opt-in streaming recognition.
+        # The final queue is always filled too, so the batch fallback keeps
+        # the complete recording whatever happens to the live session.
+        self._stream_listener = None
         self.stream = None
         self.volume_level = 0.0
 
@@ -33,6 +37,13 @@ class AudioRecorder:
             self.audio_queue.put(chunk)
             with self._chunks_lock:
                 self._recording_chunks.append(chunk)
+                listener = self._stream_listener
+            if listener is not None:
+                try:
+                    listener(chunk)
+                except Exception:
+                    # A live-recognition fault must never stall PortAudio.
+                    pass
             # Perceptual voice meter for the Caelestia visualizer. A linear
             # `rms * 10` barely moves for normal speech and then jumps near loud
             # peaks. Mapping dBFS into 0..1 gives useful motion across whispers,
@@ -52,6 +63,7 @@ class AudioRecorder:
         self.audio_queue = queue.Queue()
         with self._chunks_lock:
             self._recording_chunks = []
+            self._stream_listener = None
         self.volume_level = 0.0
         self.actual_sample_rate = self.sample_rate
         
@@ -96,6 +108,9 @@ class AudioRecorder:
             self.stream.stop()
             self.stream.close()
             self.stream = None
+        # PortAudio has delivered its final buffers; the live session already
+        # received every chunk the final queue below contains.
+        self.detach_stream_listener()
         
         # Collect all audio data from queue
         audio_data = []
@@ -128,6 +143,22 @@ class AudioRecorder:
                 np.arange(len(audio)), audio,
             ).astype("float32")
         return audio
+
+    def attach_stream_listener(self, listener):
+        """Forward every captured chunk, replaying those captured so far.
+
+        Replay and registration share the callback's lock, so each chunk
+        reaches the listener exactly once and in capture order. The listener
+        must not block: it runs on the PortAudio callback thread.
+        """
+        with self._chunks_lock:
+            for chunk in self._recording_chunks:
+                listener(chunk)
+            self._stream_listener = listener
+
+    def detach_stream_listener(self):
+        with self._chunks_lock:
+            self._stream_listener = None
     
     def get_volume_level(self):
         return self.volume_level

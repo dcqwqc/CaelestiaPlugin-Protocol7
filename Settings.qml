@@ -27,6 +27,35 @@ SettingsObject {
         options: ["whisper-large-v3-turbo", "whisper-large-v3"]
     }
 
+    // Live transcription while speaking. Opt-in; Groq/local Whisper stays
+    // the final fallback. Billing must additionally be authorized by hand in
+    // config.json (streaming_stt_billing_authorized) and is not exposed here.
+    property bool streamingSttEnabled: false
+    SettingMeta on streamingSttEnabled {
+        label: "Live transcription (experimental)"
+        description: "Show text while speaking via a Realtime transcription session. Off by default."
+        icon: "graphic_eq"
+        inputType: SettingMeta.Switch
+    }
+
+    property string streamingSttProvider: ""
+    SettingMeta on streamingSttProvider {
+        label: "Live transcription provider"
+        description: "Set to openai-realtime to opt in. Empty keeps live transcription off."
+        icon: "settings_input_antenna"
+        inputType: SettingMeta.TextField
+    }
+
+    property string streamingSttApiKey: ""
+    SettingMeta on streamingSttApiKey {
+        label: "Live transcription API key"
+        description: "Stored locally and never logged."
+        icon: "key"
+        inputType: SettingMeta.TextField
+    }
+
+    property string streamingSttModel: "gpt-live-transcribe"
+
     // Local Whisper
     property bool whisperIsCustom: false
     property string customModel: ""

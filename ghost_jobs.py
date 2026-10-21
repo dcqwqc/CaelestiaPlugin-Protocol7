@@ -27,6 +27,9 @@ class GhostJob:
     non_enter_epoch: int | None = None
     attempt: int = 0
     send_queued: bool = False
+    # Optional opt-in live session. Its verified final replaces the batch
+    # request; anything else falls back to the retained full recording.
+    stream: object = None
     created: float = field(default_factory=time.monotonic)
 
     def public(self):
@@ -149,16 +152,18 @@ class GhostJobs:
         ):
             hook.disarm()
 
-    def enqueue(self, audio, target=None, focus_epoch=None, non_enter_epoch=None):
+    def enqueue(self, audio, target=None, focus_epoch=None, non_enter_epoch=None, stream=None):
         with self.lock:
             busy = sum(j.status in ("queued", "processing") for j in self.jobs.values())
             job = GhostJob(
                 secrets.token_hex(6), target, audio,
                 focus_epoch=focus_epoch, non_enter_epoch=non_enter_epoch,
+                stream=stream,
             )
             if busy >= 4:
                 job.status = "error"
                 job.error = "Busy processing other recordings"
+                job.stream = None
             self.jobs[job.id] = job
             # Do not keep entire audio arrays indefinitely after completion.
             while len(self.jobs) > 16:
@@ -174,6 +179,8 @@ class GhostJobs:
         if job.status == "queued":
             self.executor.submit(self._run, job)
         else:
+            if stream is not None:
+                stream.cancel()
             self._archive_after(job.id, "error", self.error_visible_seconds)
         return job
 
@@ -187,21 +194,73 @@ class GhostJobs:
         self._publish()
         self._archive_after(job.id, "error", self.error_visible_seconds)
 
+    def _take_stream(self, job):
+        with self.lock:
+            stream, job.stream = job.stream, None
+        return stream
+
+    def _verified_stream_text(self, job):
+        """Return a verified live transcript, or None to use batch STT.
+
+        The stream stays attached to the job while finalizing so that cancel
+        and Double-Control dismissal can abort it promptly.
+        """
+        with self.lock:
+            stream = job.stream
+        if stream is None:
+            return None
+        try:
+            outcome = stream.finish()
+        except Exception:
+            stream.cancel()
+            return None
+        finally:
+            with self.lock:
+                job.stream = None
+        text = (outcome.text or "").strip() if outcome.verified else ""
+        if not text:
+            return None
+        # Keep the existing guard against digit-only non-speech output.
+        guard = getattr(self.app.whisper_engine, "_suspicious_numeric_hallucination", None)
+        try:
+            if guard is not None and guard(text, job.audio):
+                return None
+        except Exception:
+            pass
+        return text
+
     def _run(self, job):
         with self.lock:
             if job.cancelled or job.status not in ("queued", "error"):
-                return
-            job.attempt += 1
-            attempt = job.attempt
-            job.status = "processing"
+                stale = job.stream
+                job.stream = None
+                runnable = False
+            else:
+                runnable = True
+                job.attempt += 1
+                attempt = job.attempt
+                job.status = "processing"
+        if not runnable:
+            if stale is not None:
+                stale.cancel()
+            return
         self._publish()
         timer = threading.Timer(self.job_timeout_seconds, self._expire, args=(job.id, attempt))
         timer.daemon = True
         timer.start()
         try:
             if job.audio is None or len(job.audio) < 8000:
+                stream = self._take_stream(job)
+                if stream is not None:
+                    stream.cancel()
                 raise ValueError("Recording was too short")
-            result = self.app.whisper_engine.transcribe(job.audio)
+            result = self._verified_stream_text(job)
+            if result is None:
+                if job.cancelled:
+                    # Never start a (possibly paid) batch request for work
+                    # the user already dismissed.
+                    return
+                result = self.app.whisper_engine.transcribe(job.audio)
             if not result or not result.strip():
                 raise ValueError("No speech recognized")
             result = self.app.llm_rewriter.rewrite(result)
@@ -327,10 +386,16 @@ class GhostJobs:
             ]
             if not visible:
                 return False
+            streams = []
             for job in visible:
                 job.cancelled = True
                 job.status = "cancelled"
                 job.audio = None
+                if job.stream is not None:
+                    streams.append(job.stream)
+                    job.stream = None
+        for stream in streams:
+            stream.cancel()
         self._publish()
         self._persist()
         return True
@@ -383,6 +448,9 @@ class GhostJobs:
             job.cancelled = True
             job.status = "cancelled"
             job.audio = None
+            stream, job.stream = job.stream, None
+        if stream is not None:
+            stream.cancel()
         self._publish()
         self._persist()
         return {"ok": True, "cancelled": True}
