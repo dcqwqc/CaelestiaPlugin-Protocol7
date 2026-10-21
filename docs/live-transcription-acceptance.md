@@ -46,7 +46,7 @@ latency, or accuracy measurements were collected. This note claims none.
 - No production deployment has been made.
 - No paid STT provider has been billed as part of this validation.
 - The feature remains on the feature branch
-  (`feat/native-caelestia-panel-v2` lineage) pending the gates below.
+  (`feature/live-transcription-20261021` lineage) pending the gates below.
 
 ## Acceptance gates
 
