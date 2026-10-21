@@ -50,3 +50,20 @@ jobs:
           git -C upstream diff --check
           git -C upstream apply --reverse --check ../integration/experimental-shell-custom-host.patch
           echo "Experimental shell host patch applies cleanly and can be reverted."
+
+  plugin-page-preview:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native plugin-manager page preview on pinned upstream
+        run: |
+          git clone --quiet https://github.com/caelestia-dots/shell.git upstream
+          git -C upstream checkout --quiet --detach 4e288c54a3b039154d19fe8a2064a174eb634405
+          cp integration/nexus/PluginsPage.qml upstream/modules/nexus/pages/PluginsPage.qml
+          git -C upstream diff --check
+          grep -Fq 'Plugins.plugins' upstream/modules/nexus/pages/PluginsPage.qml
+          grep -Fq 'Plugins.setPluginEnabled' upstream/modules/nexus/pages/PluginsPage.qml
+          if grep -Fq 'Example plugin' upstream/modules/nexus/pages/PluginsPage.qml; then exit 1; fi
+          echo 'Native plugin-manager page preview has no placeholder plugin records.'
