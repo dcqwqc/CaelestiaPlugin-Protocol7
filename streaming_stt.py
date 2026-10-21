@@ -433,7 +433,9 @@ class StreamingSession:
     def _session_update(self):
         transcription = {"model": self.settings.model}
         if self.settings.language:
-            transcription["language"] = self.settings.language
+            # gpt-live-transcribe expects language hints as a list (unlike
+            # older transcription models, which accepted singular language).
+            transcription["languages"] = [self.settings.language]
         return {
             "type": "session.update",
             "session": {
@@ -442,10 +444,10 @@ class StreamingSession:
                     "input": {
                         "format": {"type": "audio/pcm", "rate": WIRE_RATE},
                         "transcription": transcription,
-                        "turn_detection": {
-                            "type": "server_vad", "threshold": 0.5,
-                            "prefix_padding_ms": 300, "silence_duration_ms": 500,
-                        },
+                        # The recording hotkey defines the exact turn boundary.
+                        # The low-latency model still streams deltas before
+                        # the explicit stop-time buffer commit.
+                        "turn_detection": None,
                     },
                 },
             },

@@ -151,16 +151,28 @@ Item {
             spacing: 10
 
             Text {
-                text: "Dictation history"
+                text: P7.ProtocolState.liveText.length > 0 ? "Live transcription" : "Dictation history"
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
                 color: Colours.palette.m3onSurface
             }
 
+            Text {
+                visible: P7.ProtocolState.liveText.length > 0
+                width: parent.width
+                height: visible ? 64 : 0
+                text: P7.ProtocolState.liveText
+                font.pixelSize: 12
+                color: Colours.palette.m3onSurface
+                maximumLineCount: 3
+                elide: Text.ElideLeft
+                wrapMode: Text.Wrap
+            }
+
             ListView {
                 id: historyList
                 width: parent.width
-                height: parent.height - 28
+                height: parent.height - 28 - (P7.ProtocolState.liveText.length > 0 ? 74 : 0)
                 model: root.historyEntries
                 spacing: 6
                 clip: true
@@ -206,7 +218,7 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            visible: root.historyEntries.length === 0
+            visible: root.historyEntries.length === 0 && P7.ProtocolState.liveText.length === 0
             text: "No dictations saved yet"
             color: Colours.palette.m3onSurfaceVariant
             font.pixelSize: 12

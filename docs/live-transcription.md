@@ -138,3 +138,10 @@ with git rather than file sync. Each step needs separate approval.
    next recording after restart), or check out the previous commit
    (`34b768d`) and restart the backend. No data migration is involved; the
    added config keys are ignored by older versions.
+
+## Native shell behavior and current Realtime contract (22 Oct 2026)
+
+- The existing `P7STATE.liveText` is displayed in the recording pill's *existing history-on-hover area*, while the idle/recording pill geometry and hitbox remain unchanged. It is not an always-visible additional overlay.
+- The native `entry/Main.qml` now forwards enabled/provider/model setting changes to the backend. The API key and billing consent remain private config-file settings, never included in that generic settings patch.
+- The `gpt-live-transcribe` session uses `languages` (an array) rather than legacy `language`, and disables automatic VAD turns. The user's stop hotkey commits the final audio buffer. Transcript deltas can arrive during recording; stop-time completion may still take additional network time.
+- No paid endpoint was called or hardware timing verified.

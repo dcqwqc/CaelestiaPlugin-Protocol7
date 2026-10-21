@@ -46,13 +46,8 @@ SettingsObject {
         inputType: SettingMeta.TextField
     }
 
-    property string streamingSttApiKey: ""
-    SettingMeta on streamingSttApiKey {
-        label: "Live transcription API key"
-        description: "Stored locally and never logged."
-        icon: "key"
-        inputType: SettingMeta.TextField
-    }
+    // The secret key and billing consent are deliberately not exposed as
+    // ordinary shell settings. Set them in the private config file only.
 
     property string streamingSttModel: "gpt-live-transcribe"
 

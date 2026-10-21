@@ -36,6 +36,11 @@ Scope {
             use_groq: settings.useGroq,
             groq_api_key: settings.groqApiKey,
             groq_model: settings.groqModel,
+            streaming_stt_enabled: settings.streamingSttEnabled,
+            streaming_stt_provider: settings.streamingSttProvider,
+            streaming_stt_model: settings.streamingSttModel,
+            // streaming_stt_api_key and billing authorization must NOT be
+            // overwritten by the generic settings bridge.
             model_size: settings.modelSize,
             whisper_is_custom: settings.whisperIsCustom,
             custom_model: settings.customModel,
@@ -206,6 +211,9 @@ Scope {
         function onUseGroqChanged(): void { root.applySettings(true); }
         function onGroqApiKeyChanged(): void { root.applySettings(true); }
         function onGroqModelChanged(): void { root.applySettings(true); }
+        function onStreamingSttEnabledChanged(): void { root.applySettings(true); }
+        function onStreamingSttProviderChanged(): void { root.applySettings(true); }
+        function onStreamingSttModelChanged(): void { root.applySettings(true); }
         function onModelSizeChanged(): void { root.applySettings(true); }
         function onWhisperIsCustomChanged(): void { root.applySettings(true); }
         function onCustomModelChanged(): void { root.applySettings(true); }

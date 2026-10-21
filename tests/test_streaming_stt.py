@@ -163,7 +163,9 @@ class SessionTests(unittest.TestCase):
         audio_in = session["audio"]["input"]
         self.assertEqual(audio_in["transcription"]["model"], "gpt-live-transcribe")
         self.assertEqual(audio_in["format"], {"type": "audio/pcm", "rate": 24000})
-        self.assertEqual(audio_in["turn_detection"]["type"], "server_vad")
+        self.assertIsNone(audio_in["turn_detection"])
+        # Live transcription without server VAD must still stream partials.
+        self.assertEqual(audio_in["transcription"]["model"], "gpt-live-transcribe")
         self.assertNotIn(KEY, json.dumps(message))
 
     def test_audio_resampled_to_24k_pcm16_without_loss(self):
