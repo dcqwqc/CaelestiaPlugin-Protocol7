@@ -18,3 +18,9 @@ Other `custom` entries are intentionally excluded: dashboard cards, calendar mar
 6. Roll back by reverting the patch in the test checkout and switching to the stable session. Never replace Mirai/Tachibana shell while panel hosts remain missing.
 
 This is a proposed compatibility patch, **not runtime-tested or deployed**. Rebase/re-audit when upstream PR head changes. No production installation is modified by this repository commit.
+
+## Plugin manager page preview
+
+`integration/nexus/PluginsPage.qml` is a **development-only replacement** for upstream `modules/nexus/pages/PluginsPage.qml` at the same pinned PR head. It changes the installed section from dummy "Example plugin" cards to `Plugins.plugins`, displays manifest validation errors, shows version/author information, and offers functional enable/disable actions through the upstream `Plugins.setPluginEnabled(id, enabled)` API. It intentionally does **not** invent GitHub update buttons or an unimplemented official store. Real update/auto-update operations need an upstream install/update API, a security model and testable rollback.
+
+For a **disposable** development checkout, copy the file to `modules/nexus/pages/PluginsPage.qml` after applying the custom-host patch, then use the CI job's static checks and perform manual QML UI tests. This is not a production package or verified UI integration. Keep the original upstream file and old user data for reversal.
