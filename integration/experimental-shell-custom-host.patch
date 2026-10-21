@@ -1,0 +1,76 @@
+diff --git a/shell.qml b/shell.qml
+--- a/shell.qml
++++ b/shell.qml
+@@ -1,43 +1,72 @@
+ //@ pragma Env QS_CRASHREPORT_URL=https://github.com/caelestia-dots/shell/issues/new?template=crash.yml
+ //@ pragma DefaultEnv QS_NO_RELOAD_POPUP=1
+ //@ pragma DefaultEnv QS_DROP_EXPENSIVE_FONTS=1
+ //@ pragma DefaultEnv QSG_RENDER_LOOP=threaded
+ //@ pragma DefaultEnv QT_QUICK_FLICKABLE_WHEEL_DECELERATION=10000
+ 
+ import "modules"
+ import "modules/drawers"
+ import "modules/background"
+ import "modules/areapicker"
+ import "modules/lock"
+ import QtQuick
+ import Quickshell
++import Caelestia.Plugins
+ import qs.services
+ 
+ ShellRoot {
+     id: root
+ 
+     settings.watchFiles: true
+ 
+     Binding {
+         target: ShellState
+         property: "shellRoot"
+         value: root
+     }
+ 
+     GSFLoader {}
+     ServiceLoader {}
++
++    // Bridge for enabled backend-only native plugin entry points.
++    // Upstream PR #1703 defines `custom` but does not instantiate it.
++    // Do this once at shell root (NOT per monitor) to avoid duplicate daemons.
++    Item {
++        id: nativePluginBackendHost
++        width: 0
++        height: 0
++        visible: false
++
++        Repeater {
++            model: Plugins.entryPoints(EntryPointType.Custom).filter(ep => {
++                const source = String(ep.source ?? "");
++                // Legacy slot widgets/overlays need their specific host and must not
++                // become orphaned, invisible visual objects in this backend host.
++                return !ep.properties?.slot
++                    && (source === "Main.qml" || source.endsWith("/Main.qml"));
++            })
++
++            delegate: EntryPointLoader {
++                required property var modelData
++                entryPoint: modelData
++                width: 0
++                height: 0
++            }
++        }
++    }
++
+ 
+     Background {}
+     Drawers {}
+     AreaPicker {}
+     Lock {
+         id: lock
+     }
+ 
+     ConfigToasts {}
+     Shortcuts {}
+     BatteryMonitor {}
+     IdleMonitors {
+         lock: lock
+     }
+ }
