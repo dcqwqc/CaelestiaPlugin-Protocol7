@@ -1,6 +1,6 @@
 # Caelestia Native Plugin Development Migration — 21 October 2026
 
-This index tracks **29 active plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
+This index tracks **32 enabled plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
 
 ## Shared integration
 
@@ -42,6 +42,20 @@ This index tracks **29 active plugin repositories**. Original default branches a
 | [WallpaperEngine](https://github.com/dcqwqc/CaelestiaPlugin-WallpaperEngine/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged | Static source-file paths verified; runtime untested |
 | [WindowBoard](https://github.com/dcqwqc/CaelestiaPlugin-WindowBoard/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged; legacy shell panel needs adapter | Static source-file paths verified; runtime untested |
 | [WorkspaceGrid](https://github.com/dcqwqc/CaelestiaPlugin-WorkspaceGrid/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged | Static source-file paths verified; runtime untested |
+
+
+| [BatteryOptimizer](https://github.com/dcqwqc/CaelestiaPlugin-BatteryOptimizer/tree/feat/upstream-plugin-dev-20261021) | New private repository, native manifest staged | Original main preserved; Backend.qml host adapter needed upstream |
+| [PowerBank](https://github.com/dcqwqc/CaelestiaPlugin-PowerBank/tree/feat/upstream-plugin-dev-20261021) | New private repository, native manifest staged | Original main preserved; batteryTank slot host needed upstream |
+| [VolumeThumbMute](https://github.com/dcqwqc/CaelestiaPlugin-VolumeThumbMute/tree/feat/upstream-plugin-dev-20261021) | New private repository, native manifest staged | Original main preserved; OSD slot host needed upstream |
+
+## Verified release candidates — 21 October 2026
+
+- All **32** enabled plugins now have private or existing GitHub repositories, migration branches, draft pull requests and **passing manifest CI**.
+- All 32 are cloned in an isolated Philipedia workspace. Release packager at [prepare_native_release.py](./prepare_native_release.py) produces an upstream-development profile and a fork-compatible profile without touching live installations. Safety unit tests cover overwrite refusal, dirty working trees, symlink escape, duplicate plugin identity and legacy panel preservation.
+- The **fork-compatible 32-plugin candidate** is staged on Mirai at `~/.cache/caelestia-native-migration/release-fork-32-20261021`, outside the live plugin loader roots. It has **109 of 109 QML files parse successfully** using Qt 6.11.2 `qmlformat --ignore-settings` in read-only mode.
+- This is **not an activated deployment**. Mirai has local or newer plugin differences (including Loom, Color, TabletMode, PhoneMirror, Devices and other plugins), and its shell worktree has approximately 60 uncommitted changes. Overwriting those would violate non-destructive migration.
+- Tachibana SSH remains unavailable, so its live state cannot be verified. Upstream official PR #1703 is still open/unmerged.
+- Native upstream integration still lacks custom slot hosting and the legacy shell-panel host; the fork already contains those UI hooks. The two profiles must not be confused.
 
 ## Hard blockers and remaining work
 
