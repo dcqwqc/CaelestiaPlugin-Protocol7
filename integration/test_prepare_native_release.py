@@ -25,15 +25,16 @@ class CandidateBuilderTests(unittest.TestCase):
             "entryPoints": [{"type": "custom", "source": "Main.qml"}],
         }
         (root / "Main.qml").write_text("import QtQuick\nItem {}\n")
-        (root / "manifest.json").write_text(json.dumps(manifest))
+        (root / "manifest.native-dev.json").write_text(json.dumps(manifest))
+        prod = dict(manifest)
+        prod.pop("requires")
         if panel:
-            legacy = dict(manifest)
-            legacy.pop("requires")
-            legacy["entryPoints"] = manifest["entryPoints"] + [
+            prod["entryPoints"] = manifest["entryPoints"] + [
                 {"type": "shell-panel", "source": "Panel.qml",
                  "properties": {"edge": "top"}}]
             (root / "Panel.qml").write_text("import QtQuick\nItem {}\n")
-            (root / "manifest.legacy.json").write_text(json.dumps(legacy))
+            (root / "manifest.legacy.json").write_text(json.dumps(prod))
+        (root / "manifest.json").write_text(json.dumps(prod))
         subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
         for key, val in [("user.name", "Caelestia CI"), ("user.email", "ci@example.invalid")]:
             subprocess.run(["git", "-C", str(root), "config", key, val], check=True)

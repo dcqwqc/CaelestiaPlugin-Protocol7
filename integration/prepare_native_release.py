@@ -38,19 +38,16 @@ def safe_copy(src: Path, dest: Path) -> None:
         shutil.copy2(resolved, target)
 
 def manifest_for(repo: Path, profile: str) -> dict:
-    native = json.loads((repo / "manifest.json").read_text(encoding="utf-8"))
-    if profile == "fork":
-        if (repo / "manifest.legacy.json").exists():
-            selected = json.loads((repo / "manifest.legacy.json").read_text(encoding="utf-8"))
-        else:
-            selected = dict(native)
-            # The existing fork already has the native loader; its version need not
-            # pretend to be the as-yet unreleased upstream 2.1.0.
-            selected.pop("requires", None)
-    else:
-        selected = native
-        if selected.get("requires") != ">=2.1.0":
-            raise ValueError(f"{repo.name}: native development gate missing")
+    # Native API remains opt-in. The fork-compatible manifest is the default
+    # so a merged PR never disables currently deployed shell-panel components.
+    prod = json.loads((repo / "manifest.json").read_text(encoding="utf-8"))
+    dev_path = repo / "manifest.native-dev.json"
+    native = json.loads(dev_path.read_text(encoding="utf-8")) if dev_path.is_file() else prod
+    selected = prod if profile == "fork" else native
+    if profile == "upstream" and selected.get("requires") != ">=2.1.0":
+        raise ValueError(f"{repo.name}: experimental API gate missing")
+    if profile == "fork" and selected.get("requires"):
+        raise ValueError(f"{repo.name}: active fork profile must have no loader gate")
     if selected.get("name") != native.get("name") or selected.get("author") != native.get("author"):
         raise ValueError(f"{repo.name}: profile changes plugin identity")
     return selected

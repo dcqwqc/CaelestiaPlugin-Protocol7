@@ -27,15 +27,17 @@ class ReleaseBuilderTests(unittest.TestCase):
             "requires": ">=2.1.0",
             "entryPoints": [{"type": "custom", "source": "Main.qml"}]
         }
-        (repo / "manifest.json").write_text(json.dumps(manifest))
+        (repo / "manifest.native-dev.json").write_text(json.dumps(manifest))
         (repo / "Main.qml").write_text("import QtQuick\nItem {}\n")
+        original = dict(manifest)
+        original.pop("requires")
         if legacy:
-            original = {**manifest, "entryPoints": [
+            original["entryPoints"] = [
                 {"type": "custom", "source": "Main.qml"},
-                {"type": "shell-panel", "source": "Panel.qml"}]}
-            original.pop("requires")
+                {"type": "shell-panel", "source": "Panel.qml"}]
             (repo / "manifest.legacy.json").write_text(json.dumps(original))
             (repo / "Panel.qml").write_text("import QtQuick\nItem {}\n")
+        (repo / "manifest.json").write_text(json.dumps(original))
         subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
         subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
         subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test",
