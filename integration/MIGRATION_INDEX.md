@@ -76,3 +76,10 @@ verifies profile preservation, overwrite refusal, duplicate identity rejection,
 and rejection of symlink escapes. No working plugin directory is overwritten.
 Mirai staged verification passed 32/32 manifest identities, 32/32 SHA-256 checks,
 and 110/110 QML syntax parses. The live plugin installation remains untouched.
+
+
+## Disabled experimental plugin outside the enabled set
+
+The latest Mirai inventory contains **33 installed plugin directories, of which 32 are enabled**. The additional installed plugin is **dcqwqc/Home**, an independently released Home OS dashboard tab from the separate Home project. It is **not enabled**, has a valid dashboard-tab manifest and its Home.qml parsed successfully. It is not part of the 32 active CaelestiaPlugin repository migrations and must not be silently treated as missing or overwritten. Coordinate updates through its own project and release process.
+
+The Mirai read-only preflight reports **10 modified plugin worktrees** and **63 local shell changes**. Source snapshots must not overwrite these files. Tachibana did not respond to SSH during this verification. The current release artifacts remain staged and unactivated.
