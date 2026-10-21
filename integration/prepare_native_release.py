@@ -47,9 +47,11 @@ def manifest_for(repo: Path, profile: str) -> dict:
     return selected
 
 def verify_manifest(repo: Path, m: dict, profile: str) -> list[str]:
-    for field in ("author", "name", "version"):
+    for field in ("author", "name"):
         if not isinstance(m.get(field), str) or not NAME.fullmatch(m[field]):
             raise ValueError(f"{repo.name}: invalid {field}")
+    if not isinstance(m.get("version"), str) or not re.fullmatch(r"[0-9][0-9A-Za-z._+-]*", m["version"]):
+        raise ValueError(f"{repo.name}: invalid version")
     allowed = FORK_TYPES if profile == "fork" else ENTRY_TYPES
     declared = []
     for entry in m.get("entryPoints", []):
