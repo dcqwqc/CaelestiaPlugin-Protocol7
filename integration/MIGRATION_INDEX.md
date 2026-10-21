@@ -1,6 +1,6 @@
 # Caelestia Native Plugin Development Migration — 21 October 2026
 
-This index tracks **29 active plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
+This index tracks **32 active plugin repositories**. Original default branches and currently installed plugins remain unchanged. All migration work is isolated to `feat/upstream-plugin-dev-20261021` and targets upstream [caelestia-dots/shell#1703](https://github.com/caelestia-dots/shell/pull/1703), which is still **unmerged**. The archived `caelestia-edge-plugin` repository is deliberately excluded.
 
 ## Shared integration
 
@@ -42,6 +42,20 @@ This index tracks **29 active plugin repositories**. Original default branches a
 | [WallpaperEngine](https://github.com/dcqwqc/CaelestiaPlugin-WallpaperEngine/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged | Static source-file paths verified; runtime untested |
 | [WindowBoard](https://github.com/dcqwqc/CaelestiaPlugin-WindowBoard/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged; legacy shell panel needs adapter | Static source-file paths verified; runtime untested |
 | [WorkspaceGrid](https://github.com/dcqwqc/CaelestiaPlugin-WorkspaceGrid/tree/feat/upstream-plugin-dev-20261021) | Native manifest staged | Static source-file paths verified; runtime untested |
+
+## Added local plugin repositories and staged verification
+
+Three existing Mirai plugins were imported into separate private GitHub repositories with the original main branches preserved and development branches created:
+
+| Plugin | Migration |
+|---|---|
+| [BatteryOptimizer](https://github.com/dcqwqc/CaelestiaPlugin-BatteryOptimizer/tree/feat/upstream-plugin-dev-20261021) | Custom Backend.qml needs one-time host |
+| [PowerBank](https://github.com/dcqwqc/CaelestiaPlugin-PowerBank/tree/feat/upstream-plugin-dev-20261021) | batteryTank custom slot needs upstream host |
+| [VolumeThumbMute](https://github.com/dcqwqc/CaelestiaPlugin-VolumeThumbMute/tree/feat/upstream-plugin-dev-20261021) | OSD custom slot needs upstream host |
+
+All 32 GitHub PRs have manifest validation checks. Isolated fork and upstream candidate assemblies contain 32 unique plugin IDs. The fork candidate on Mirai passed identity and SHA-256 validation and 110/110 QML parses without changing its active installation. Additional checks: Loom 341 tests (3 environmental skips), RemoteDesktop 48 tests, Protocol7 8 visual-structure tests. Full Protocol7 audio tests are unverified because the standalone test environment lacks Python audio dependencies.
+
+The release builder packages Git-tracked source files only and tests refusal to copy untracked files or external symlinks. Nothing has been deployed into the live plugin directories; Mirai has active local edits that must be reconciled. Tachibana was unreachable during the audit.
 
 ## Hard blockers and remaining work
 

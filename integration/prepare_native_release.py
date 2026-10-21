@@ -17,16 +17,25 @@ FORK_TYPES = ENTRY_TYPES | {"shell-panel"}
 IGNORED = {".git", ".github", "__pycache__", ".pytest_cache", ".mypy_cache", ".tox", "node_modules", ".ruff_cache"}
 
 def safe_copy(src: Path, dest: Path) -> None:
-    base = src.resolve()
-    for path in src.rglob("*"):
-        if any(part in IGNORED for part in path.relative_to(src).parts):
+    """Package only versioned source content, never untracked local data."""
+    base = src.resolve(strict=True)
+    tracked = subprocess.check_output(["git", "-C", str(src), "ls-files", "-z"])
+    files = [Path(os.fsdecode(x)) for x in tracked.split(b"\0") if x]
+    if not files:
+        raise ValueError(f"No tracked files to package: {src}")
+    dest.mkdir(parents=True, exist_ok=False)
+    for relative in files:
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"Unsafe Git entry: {relative}")
+        if any(part in IGNORED for part in relative.parts):
             continue
-        if path.is_symlink():
-            resolved = path.resolve(strict=True)
-            if not resolved.is_relative_to(base):
-                raise ValueError(f"external symlink is not safe to package: {path}")
-    shutil.copytree(src, dest, symlinks=False,
-                    ignore=lambda folder, names: [name for name in names if name in IGNORED])
+        path = src / relative
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(base) or not resolved.is_file():
+            raise ValueError(f"Unsafe tracked file or external symlink: {relative}")
+        target = dest / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(resolved, target)
 
 def manifest_for(repo: Path, profile: str) -> dict:
     native = json.loads((repo / "manifest.json").read_text(encoding="utf-8"))
