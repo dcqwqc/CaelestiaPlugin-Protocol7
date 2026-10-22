@@ -1,210 +1,155 @@
-# Protocol 7 live preview (Groq chunked incremental transcription)
+# Protocol 7 Groq live preview
 
-Status: **draft implementation on the development branch
-`feature/live-transcription-20261021`. Not merged, not deployed, not enabled
-anywhere.** All evidence so far is offline: mocked Groq clients, synthetic
-audio, sockets blocked. No real Groq request was made, so free-tier latency,
-accuracy and real-microphone behavior are **not yet measured**.
+Development candidate on `feature/live-transcription-20261021`. **Release
+blocked; no deployment or provider traffic has been performed.** Tests use
+synthetic audio and fake clients. Real latency, accuracy, billing protection,
+provider headers and microphone behavior remain unverified.
 
-This replaces the earlier OpenAI Realtime design (paid endpoint, separate
-key, billing consent). That code, its keys and its UI are gone. Old
-`streaming_stt_*` keys left in an existing `config.json`
-(`streaming_stt_api_key`, `streaming_stt_model`,
-`streaming_stt_billing_authorized`, `streaming_stt_finalize_timeout_seconds`,
-provider `openai-realtime`) are ignored; `openai-realtime` reports
-"unsupported provider" and creates nothing.
+Previews are display-only overlapping Whisper windows. The complete original
+recording still goes to the existing batch final path once per attempt;
+preview text never enters paste, rewrite or history. Existing final model
+selection and fallback behavior are retained. No account plan is upgraded.
 
-## What it does, and what it never does
+## Fail-closed configuration
 
-- While the user speaks, a preview line appears in the recording pill's
-  existing hover area (`P7STATE.liveText`), updated about every 5–6 s.
-- The preview is **display-only**. It is never inserted, saved to history,
-  logged, or used as the dictation result.
-- On stop, the ghost job **always** transcribes the complete original
-  recording with the existing Groq final path, exactly once per attempt
-  (Retry is a new attempt). A failed, throttled or disabled preview never
-  prevents or delays that final.
-- Previews use the Groq client and model already selected for final
-  dictation (`use_groq`, `groq_api_key`, `groq_model`). There is no other
-  provider, credential or billing route. The client must point at
-  `https://*.groq.com`; anything else is refused before any request.
+The default switch is off. Turning on the shell's experimental switch alone
+is insufficient. Backend configuration requires all of the following:
 
-## Configuration (`~/.config/protocol-7/config.json`)
-
-| key | default | meaning |
+| Key | Default | Meaning |
 | --- | --- | --- |
-| `streaming_stt_enabled` | `false` | master switch (must be JSON `true`) |
-| `streaming_stt_provider` | `"groq-chunks"` | the only supported value |
-| `streaming_stt_preview_interval_seconds` | `5.0` | cadence, clamped to 4–6 s |
+| `streaming_stt_enabled` | `false` | Explicit opt-in |
+| `streaming_stt_provider` | `groq-chunks` | Only supported provider |
+| `streaming_stt_preview_interval_seconds` | `5.0` | Clamped to 4–6 seconds |
+| `streaming_stt_free_tier_verified` | `false` | Operator assertion/consent: provider confirms free-tier organization and protection against charges/automatic paid upgrades |
+| `streaming_stt_quota_partition_verified` | `false` | Operator assertion: exactly two organization producers, each with its own half allocation, and all their finals/previews accounted by their host ledger |
+| `streaming_stt_verified_at` | `0` | Unix timestamp of verification; expires after 24 hours, including during a recording |
+| `streaming_stt_quota_ledger` | empty | Absolute path to durable SQLite ledger, shared by every backend process on this host |
 
-Previews also require `use_groq: true` and a non-empty `groq_api_key`. The
-native Caelestia settings expose only the switch ("Live preview
-(experimental)") and the provider (`groq-chunks` as the single option).
-`entry/Main.qml` forwards just those two keys.
+`use_groq: true`, a key, and a selected `groq_model` of
+`whisper-large-v3` or `whisper-large-v3-turbo` are also required. The transport
+checks the allowlist again and permits HTTPS Groq endpoints only. Unsupported
+models remain usable by the existing batch path; they cannot create previews.
+Old OpenAI Realtime settings do not enable this feature.
 
-## Pipeline
+**Actual account billing tier is an EXTERNAL FACT that only Groq/provider can
+confirm.** Neither a hostname, an API key, a local counter nor a boolean proves
+zero cost. These assertions must not be set without independent evidence.
+Unknown/stale protection means no previews. Billing and quota verification
+remain unresolved external release gates; this implementation is not sign-off.
+No credentials or configurations were changed during offline validation.
 
-```
-PortAudio callback ── put_nowait ──> bounded queue ──> preview worker thread
-   │                                                   │  VAD + window planner (ring buffer)
-   └─> audio_queue (complete recording)                │  process-wide budget (single flight)
-            │                                          └─> request thread ── Groq (timeout 4 s)
-            │                                                   └─> reconciler ─> set_live_text
-            └─ on stop ─> ghost job ─> final Groq transcription of the full audio (once)
-```
+## Durable conservative quota policy
 
-- **Capture thread** (`audio.AudioRecorder._audio_callback`): only
-  `put_nowait`. A full queue drops the chunk *for the preview only* and
-  counts the lost samples; the final recording is unaffected.
-- **Worker** (`protocol7-preview`): drains chunks, runs voice detection,
-  proposes windows, reserves budget, starts at most one request thread.
-  It stops itself when no audio arrives for 3 s (dead recorder) or after
-  15 min, and the main loop stops it the moment recording stops.
-- **Request thread** (`protocol7-preview-request`): encodes a 16 kHz mono
-  PCM16 WAV, re-checks that the session is still live, then calls
-  `client.audio.transcriptions` (`verbose_json`, `temperature=0`, per-request
-  `timeout=4.0`, language hint only when auto-detect is off). Rate-limit
-  headers are read through `with_raw_response` when the SDK offers it.
-- `stop()` / `cancel()` never wait for an in-flight request. After they
-  return, no partial is published and no new request starts. A late result
-  only updates the budget.
+The policy ceiling supplied for Whisper is 20 RPM, 2000 RPD, 7200 audio
+seconds/hour and 28800/day per organization. Provider limits must be checked
+before rollout; no live documentation or endpoint was accessed in this work.
+Every reservation counts at least 10 audio seconds, including finals. Timeout
+and failure reservations are retained; only definitely unsent previews refund.
 
-### Windows
+There is no cross-host service. Each of the two hosts gets half of every
+ceiling: 10 RPM, 1000 RPD, 3600 seconds/hour, 14400/day. Previews may consume
+only 4 RPM and 40% of the other host ceilings, **with local final usage included**.
+Thus preview admission leaves at least 6 RPM, 600 RPD, 2160 seconds/hour and
+8640/day of that host allocation for finals. With both hosts active, preview
+admission is at most 8 RPM in aggregate. This lower cadence is intentional.
+No unused allocation is borrowed from the other host. A third producer,
+different ledgers for processes on one host, or unknown organization consumers
+invalidates the partition assertion and must disable previews.
 
-- First preview after 4 s of audio, then one window per 5 s of new audio.
-  Each window is the latest 6 s (interval + 1 s overlap with the previous
-  window). The ring buffer holds window + 1 s, so memory per recording is
-  bounded (~450 KB at 16 kHz).
-- A window is sent only if it holds at least 0.6 s of detected speech *and*
-  at least 0.5 s of speech is new since the last window. Silence is used up
-  without a request, so the same speech is never sent twice without new
-  voiced samples.
-- If unsent speech was skipped (throttling, queue overflow, failed request),
-  the next window is marked as a gap and joined with `…` instead of being
-  merged.
+SQLite transactions serialize reservations across processes. Events,
+cooldowns, strikes and final registrations survive restarts. A new/missing
+ledger warms up for 24 hours while finals are recorded. A crash during a final
+leaves a conservative active-final marker; it cannot silently restore capacity.
+Corrupt state, clock rollback, disk errors or contention suppress previews.
+An accounting failure creates a durable `.unsafe` flag, preventing another
+process or restart from forgetting an unaccounted final. Recovery requires
+operator investigation and a fresh 24-hour accounting window, not deleting
+state to regain capacity. No permanent service is installed.
 
-### Voice activity
+Finals always proceed, including when the ledger is unavailable or the host's
+allocation is already exhausted. Bookkeeping waits at most 25 ms for SQLite;
+there is no wait for a preview request or its UI callback. Therefore **unbounded
+final traffic can still exceed provider limits**. The code bounds preview
+admission under the verified two-producer policy; it cannot guarantee a total
+organization bound while also preserving unrestricted finals. Other clients,
+quota changes and missing provider counters remain external uncertainty.
 
-`SpeechDetector` is deterministic and dependency-free. Each 30 ms frame is
-speech-like if it is ≥ −48 dBFS, ≥ 12 dB above an adaptive noise floor
-(minimum tracking, rising 1 dB/s) and has a zero-crossing rate ≤ 0.4. A run
-counts as speech only when it is ≥ 210 ms long and ≥ 60 % dense (gaps ≤ 90 ms
-before confirmation, 200 ms after). In synthetic tests this rejects silence,
-low and loud broadband noise, mains hum, typing/clicks and 150 ms blips, and
-it detects syllable-modulated harmonic signals down to about −40 dBFS. These
-thresholds are **not yet tuned on real microphones**.
+Both final and preview responses feed throttling when headers are available.
+429 retains the reservation, applies retry-after (minimum 60 seconds), doubles
+cooldown on repeated strikes and durably disables previews after three strikes
+in a day. Low request/audio counters reserve capacity for finals; unknown
+headers never increase local capacity. Final request payloads, models and
+success/failure semantics remain unchanged; raw SDK responses are used when
+available solely to inspect headers. No full recording is shortened.
 
-### Hallucination filtering
+## Capture, speech and text
 
-Segments with `no_speech_prob > 0.85`, `no_speech_prob > 0.6` and
-`avg_logprob < -0.7`, or `compression_ratio > 2.4` are dropped. Text without
-letters, single-phrase Whisper artifacts ("Thank you.", "Thanks for
-watching", "you", …) and decoder loops are not shown. This affects the
-preview only; the final has its own existing safeguards.
+Capture enqueues into a bounded queue. Overflow drops preview samples only.
+The worker keeps a bounded audio ring, initially proposes a window after
+4 seconds, then up to 6-second windows with 1-second overlap. Each needs
+0.6 seconds of speech and 0.5 seconds of new speech. Quota policy can reduce
+cadence or suppress all previews. Idle/session/request limits remain bounded.
 
-### Stable text
+The dependency-free detector combines a -60 dBFS absolute threshold,
+speech-band energy (90–4000 Hz), normalized periodicity, zero-crossing rate
+and dense sustained runs of at least 210 ms. Startup no longer learns initial
+speech as background. Synthetic tests cover immediate and quiet sustained
+vowels, hum, energetic broadband/colored noise, taps and blips. **This heuristic
+is not a validated real-microphone VAD**: tonal noise may pass and unvoiced
+speech may be missed. It gates previews only.
 
-`TextReconciler` aligns the start of each overlapping window with the end of
-the current preview, position by position (so one misrecognized word inside
-the overlap does not break the match, and a cut-off last word may match its
-completed form). The newer window's wording wins inside the overlap, which
-fixes edge punctuation such as a premature full stop. Only the last 8 words
-can ever change; everything earlier is frozen, so text never blinks or jumps
-back. The preview keeps at most 300 words.
+Segment confidence and known decoder-artifact filtering apply to previews.
+Text alignment needs at least two matching words before revising the tail;
+ambiguous single-word boundaries and nonoverlapping repetition are preserved.
+Only the last 8 words can change and text is bounded to 300 words. Conservatism
+can leave duplicates. Gaps are marked with an ellipsis.
 
-## Free-tier budget and rate limits
+## Lifecycle limitation — release blocker
 
-Groq's free tier for `whisper-large-v3` / `-turbo` is 20 requests/min, 2000
-requests/day, 7200 audio-seconds/hour and 28800 audio-seconds/day per
-organization. Those limits are shared with final dictation and with any
-other device using the same key. `PreviewBudget` (one per backend process)
-therefore:
+Stop invalidates the session generation immediately; encoding/client lookup
+are followed by synchronized dispatch admission, checking final priority,
+stopped state, cooldown and assertion expiry. A final arriving before admission
+revokes the queued preview. Already admitted requests remain charged and late
+results are ignored. Callbacks run outside lifecycle locks; the application
+checks session identity and activity when consuming a callback.
 
-- counts every request as at least 10 s of audio (Groq's minimum billed
-  length), and counts **finals as well as previews**;
-- allows previews only while total usage stays within 12 requests/min and
-  40 % of the daily request, hourly audio and daily audio limits;
-- never starts a preview while a final is in flight (`final_priority`);
-- keeps exactly one preview request in flight process-wide;
-- on HTTP 429 disables previews for that recording and cools down all
-  previews for `max(retry-after, 60 s)`, doubling per strike; the third
-  429 within 24 h disables previews until the backend restarts;
-- on 401/403 disables previews until restart; on timeout/5xx/connection
-  errors cools down 10 s and disables the recording's previews after two
-  consecutive failures;
-- when `x-ratelimit-remaining-requests` falls to 5 % (≥ 20 requests) of
-  the daily limit, pauses previews until `x-ratelimit-reset-requests`.
+**Strict wire-level exclusion remains unresolved:** with the synchronous SDK,
+there is still a scheduling gap between dispatch admission and the SDK's
+actual HTTP send. An admitted request can reach transport after stop returns
+or after final registration. Holding the lifecycle lock through a synchronous
+request would block stop/final processing, which is unacceptable. This candidate
+therefore does not claim the stronger “no HTTP send after stop” guarantee.
+A callback already executing cannot be withdrawn either; UI consumers need
+an epoch-aware delivery API to reject stale work atomically at publication.
+Independent transport/UI review and a cancellable transport integration are
+required before release. Existing in-flight HTTP cannot be refunded/cancelled
+merely by discarding its result.
 
-At the default cadence a continuous minute of speech costs about 11–12
-preview requests (≈ 110–120 billed audio-seconds) plus the final. The
-hourly preview share runs out after roughly 24 minutes of continuous
-speech, after which only finals are sent.
+## Offline validation
 
-Final dictation itself is unchanged: one request, `max_retries=0`, 10 s
-client timeout. Previews leave headroom for it but cannot guarantee that
-another device has not exhausted the organization's limits.
-
-## Privacy
-
-The API key is never held by the preview session. Logs contain status words
-only (`preview deferred (rpm)`, `preview request failed (timeout)`, …):
-never transcript text, audio, exception messages or credentials. Provider
-errors are reduced to a category. No recordings are stored or committed;
-all test audio is synthesized from seeded generators.
-
-## Tests and benchmark (offline)
+Use the private validation interpreter requested for this task:
 
 ```
-python -m unittest tests.test_groq_chunks tests.test_streaming_stt \
-    tests.test_streaming_integration tests.test_streaming_plugin_config -v
-python tests/test_groq_chunks.py --benchmark
+/home/qwqc/.local/state/loom-fleet/validation-venvs/protocol7/bin/python -m unittest \
+  tests.test_groq_chunks tests.test_streaming_stt tests.test_streaming_integration \
+  tests.test_streaming_plugin_config tests.test_preview_corrections
+# Broader regressions with process-wide network guards and temporary state:
+/home/qwqc/.local/state/loom-fleet/validation-venvs/protocol7/bin/python tests/run_offline_preview.py
 ```
 
-Every module patches `socket.socket.connect` to fail, history and ghost-job
-persistence are redirected to temporary directories, and Groq is an
-in-memory fake. On the development host the system Python lacks NumPy, so
-the suites run in the private validation venv
-(`~/.local/state/loom-fleet/validation-venvs/protocol7`, NumPy only).
+The corrective tests add restart, simultaneous processes, two-host partition,
+ledger failures, final 429/audio headers, safety assertions, VAD, repetition,
+encoding races and slow callback cases. They use temporary local ledgers and
+fake SDK clients. Network is blocked in these suites.
 
-The benchmark replays 60 s synthetic scripts (seeds 7, 11, 23, 42) in
-virtual time through the real scheduling, budget, VAD and reconciliation
-code, with a mocked Whisper that cuts edge words, adds window-edge full
-stops and injects 4 % recognition errors, and 0.35–1.1 s mocked latency.
-Results from the commit that introduced this design:
+`tests/test_groq_chunks.py --benchmark` is a virtual-time simulation with
+mocked latency/responses, not real cloud accuracy or latency. Its original
+3.4–9.8% word-error figures predate conservative repetition handling and do
+not describe this revision. New results belong in the local validation report.
+The benchmark exercises the algorithm with an in-memory budget, not the
+production durable two-host admission policy.
 
-| metric | result |
-| --- | --- |
-| preview word error rate vs. script | 3.4–9.8 % (naive concatenation: 20.5–28.1 %) |
-| first preview after first word | 4.0–4.7 s (virtual) |
-| mean update interval | 5.5–6.3 s |
-| peak requests in any minute | 10–11 (cap 12) |
-| windows sent over silence | 0 |
-| max words revised per update | 3 (limit 8) |
-| extra adjacent duplicate words | 0–1 |
-| `push_audio` cost on capture thread | < 1 µs per call (wall clock, dev host) |
-
-These are properties of the algorithm against a simulator. They are not
-Groq latency or accuracy measurements.
-
-## Not yet verified
-
-- Any real Groq request (preview or final) from this branch.
-- Real free-tier latency, 429 behavior and rate-limit headers.
-- VAD thresholds and preview quality on real microphones (Mirai, Tachibana).
-- Visual check of the preview line in the Caelestia hover panel.
-- QML was checked by contract tests only; no QML linter or shell run here.
-
-## Rollout and rollback plan (not executed; each step needs approval)
-
-1. Review this branch; run the offline suites above on an independent host.
-2. Install on a test machine with `streaming_stt_enabled` left `false`.
-   Verify Double-Control dictation, Groq insertion, Enter-to-send, history,
-   cancel and dismiss behave exactly as before, and the debug log has no
-   `[LIVE_STT]` lines.
-3. Enable the switch on one machine. Speak 10–60 s dictations; confirm the
-   preview appears, the inserted text always equals the final, silence and
-   typing trigger no requests, and the log holds no text or key. Record
-   observed preview latency and any 429s.
-4. Rollback: switch the preview off (takes effect after the backend
-   restart triggered by the setting) or check out the previous commit. No
-   data migration is involved.
+Real free-tier protection, actual shared organization usage, provider behavior,
+microphones and Caelestia visual delivery have not been verified. There has
+been no device rollout. Release requires resolving the blockers above and
+independent review. Keep previews disabled in the meantime.

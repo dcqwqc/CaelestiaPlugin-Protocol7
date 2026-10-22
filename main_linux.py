@@ -187,7 +187,7 @@ class Protocol7App:
     def _on_stream_partial(self, session, text):
         # Display only while recording: partials are never pasted, saved to
         # history or logged. Events from a finished session are ignored.
-        if not self.is_active or self._stream_session is not session:
+        if not self.is_active or self._stream_session is not session or not session.active:
             return
         setter = getattr(self.ui_manager, "set_live_text", None)
         if setter is not None:

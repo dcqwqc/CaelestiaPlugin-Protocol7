@@ -11,11 +11,15 @@ disabled preview can never prevent or delay that final request.
 
 Threading: the PortAudio callback only ``put_nowait``s chunks. One worker
 thread per recording drains them, runs voice-activity detection and plans
-windows; at most one preview request is in flight process-wide, on its own
+windows; at most one preview request is in flight per session, on its own
 short-lived thread with a bounded timeout. Memory per recording is bounded
 by the ring buffer (window + 1 s) and the speech-interval list.
 
-Budgeting: Groq's free tier for Whisper allows 20 requests/min, 2000/day,
+Budgeting: runtime previews require fresh explicit provider/organization
+assertions and a warmed durable two-host partition ledger. These are not
+proof of account billing protection. See preview_quota.py and the release
+blockers in docs/live-transcription.md. Groq's supplied free tier for Whisper
+allows 20 requests/min, 2000/day,
 7200 audio-seconds/hour and 28800/day per organization, shared with the
 final dictation and any other device using the same key. Previews may use
 only a fraction of that (counting the 10 s minimum billed length per
@@ -34,7 +38,7 @@ import time
 import wave
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from urllib.parse import urlsplit
 
 import numpy as np
@@ -42,6 +46,7 @@ import numpy as np
 PROVIDER_GROQ_CHUNKS = "groq-chunks"
 WIRE_RATE = 16000
 DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo"
+FREE_MODELS = frozenset({"whisper-large-v3", "whisper-large-v3-turbo"})
 
 # Groq free-tier limits for whisper-large-v3 / -turbo (per organization).
 FREE_TIER_LIMITS = {
@@ -65,6 +70,7 @@ class PreviewUnavailable(RuntimeError):
 @dataclass(frozen=True)
 class PreviewSettings:
     language: str = ""
+    verification_deadline: float = 0.0
     interval_seconds: float = 5.0
     overlap_seconds: float = 1.0
     first_preview_seconds: float = 4.0
@@ -94,6 +100,10 @@ def _clamp(value, low, high, default):
 
 def availability(config):
     """Return None when previews may run, else a short non-secret reason."""
+    # Keep final accounting alive even while previews are switched off.
+    configured_path = config.get("streaming_stt_quota_ledger")
+    if isinstance(configured_path, str) and configured_path.startswith("/"):
+        configure_budget(configured_path)
     if config.get("streaming_stt_enabled", False) is not True:
         return "disabled"
     provider = str(config.get("streaming_stt_provider") or "").strip()
@@ -105,6 +115,18 @@ def availability(config):
         return "Groq dictation not enabled"
     if not str(config.get("groq_api_key") or "").strip():
         return "no Groq API key configured"
+    if str(config.get("groq_model") or DEFAULT_GROQ_MODEL) not in FREE_MODELS:
+        return "unsupported preview model"
+    if config.get("streaming_stt_free_tier_verified") is not True:
+        return "provider free-tier protection not verified"
+    if config.get("streaming_stt_quota_partition_verified") is not True:
+        return "organization quota partition not verified"
+    verified = _number(config.get("streaming_stt_verified_at"), 0.0)
+    if not 0 <= time.time() - verified < 86400:
+        return "provider/quota verification stale"
+    path = config.get("streaming_stt_quota_ledger")
+    if not isinstance(path, str) or not path.startswith("/"):
+        return "durable quota ledger required"
     reason = default_budget().disabled_reason()
     if reason:
         return f"preview disabled ({reason})"
@@ -127,7 +149,7 @@ def create_session(config, *, input_rate=16000, client_provider=None, on_partial
     if availability(config) is not None or client_provider is None:
         return None
     return GroqChunkSession(
-        settings_from_config(config), input_rate=input_rate,
+        replace(settings_from_config(config), verification_deadline=float(config["streaming_stt_verified_at"]) + 86400), input_rate=input_rate,
         client_provider=client_provider, budget=budget, on_partial=on_partial, log=log,
     )
 
@@ -139,25 +161,21 @@ def create_session(config, *, input_rate=16000, client_provider=None, on_partial
 class SpeechDetector:
     """Deterministic energy/zero-crossing voice detector.
 
-    A 30 ms frame is speech-like when it is above an absolute level, well
-    above an adaptive noise floor and not noise-like (high zero-crossing
-    rate). Only dense runs of >= ~210 ms count as speech, which rejects
+    A 30 ms frame needs sufficient speech-band energy and periodicity,
+    an absolute level and a low zero-crossing rate. No startup noise-floor
+    calibration can absorb immediate speech. Dense runs >= ~210 ms reject
     clicks, key taps and brief bumps; confirmed runs bridge 200 ms pauses.
     """
 
-    def __init__(self, rate, *, frame_seconds=0.03, abs_threshold_db=-48.0, margin_db=12.0,
-                 max_zcr=0.4, min_run_seconds=0.21, hangover_seconds=0.2,
-                 floor_rise_db_per_second=1.0):
+    def __init__(self, rate, *, frame_seconds=0.03, abs_threshold_db=-60.0,
+                 max_zcr=0.4, min_run_seconds=0.21, hangover_seconds=0.2):
         self.rate = int(rate)
         self.frame = max(1, int(round(self.rate * frame_seconds)))
         self.abs_threshold_db = abs_threshold_db
-        self.margin_db = margin_db
         self.max_zcr = max_zcr
         self.min_run = max(1, int(math.ceil(min_run_seconds / frame_seconds - 1e-9)))
         self.hangover = max(0, int(round(hangover_seconds / frame_seconds)))
         self.pre_gap = 3  # frames bridged before a run is confirmed (~90 ms)
-        self.floor_rise = floor_rise_db_per_second * frame_seconds
-        self.floor_db = None
         self.position = 0  # absolute sample index of the next unprocessed frame
         self.intervals = deque()  # confirmed [start, end) absolute sample spans
         self._carry = np.zeros(0, dtype=np.float32)
@@ -177,18 +195,27 @@ class SpeechDetector:
             levels = 20.0 * np.log10(np.maximum(rms, 1e-9))
             signs = np.signbit(frames)
             zcr = np.mean(signs[:, 1:] != signs[:, :-1], axis=1)
-            for level, crossing in zip(levels.tolist(), zcr.tolist()):
-                self._frame(level, crossing)
+            # Speech-band energy rejects mains hum; normalized periodicity
+            # rejects energetic broadband/colored noise without learning initial
+            # sustained vowels as background. This remains a preview heuristic.
+            spectrum = np.abs(np.fft.rfft(frames, axis=1)) ** 2
+            frequencies = np.fft.rfftfreq(self.frame, 1 / self.rate)
+            band = spectrum[:, (frequencies >= 90) & (frequencies <= 4000)].sum(axis=1)
+            fraction = band / np.maximum(spectrum.sum(axis=1), 1e-20)
+            for frame, level, crossing, energy in zip(frames, levels, zcr, fraction):
+                centered = frame.astype(np.float64) - frame.mean()
+                corr = np.correlate(centered, centered, mode="full")[self.frame - 1:]
+                low, high = max(1, self.rate // 400), min(self.frame - 1, self.rate // 80)
+                periodic = max((corr[k] / max(np.sqrt(np.dot(centered[:-k], centered[:-k]) *
+                            np.dot(centered[k:], centered[k:])), 1e-20)
+                            for k in range(low, high + 1)), default=0) > 0.75
+                self._frame(float(level), float(crossing), periodic and energy > 0.55)
         self._carry = data[count * self.frame:].copy()
 
-    def _frame(self, level, crossing):
+    def _frame(self, level, crossing, voiced=True):
         start = self.position
         self.position += self.frame
-        floor = level if self.floor_db is None else self.floor_db
-        speech = (level >= self.abs_threshold_db and level >= floor + self.margin_db
-                  and crossing <= self.max_zcr)
-        # Minimum tracking: falls immediately, rises slowly through speech.
-        self.floor_db = max(-100.0, level if level < floor else min(level, floor + self.floor_rise))
+        speech = voiced and level >= self.abs_threshold_db and crossing <= self.max_zcr
         if speech:
             if self._run_start is None:
                 self._run_start, self._run_frames = start, 0
@@ -406,8 +433,8 @@ class TextReconciler:
                     continue
                 pairs = [(i + m, j + m) for m in range(len(tail) - i) if j + m < len(head)]
                 matches = sum(same(tail[a], head[b], a == last) for a, b in pairs)
-                single = matches == 1 and len(tail[i]) >= 3 and len(tail) - i <= 2 and j <= 1
-                if not (single or (matches >= 2 and 2 * matches >= len(pairs))):
+                # One word alone cannot establish temporal alignment.
+                if not (matches >= 2 and 2 * matches >= len(pairs)):
                     continue
                 key = (matches, matches - len(pairs), -j, i)
                 if best is None or key > best[0]:
@@ -419,8 +446,6 @@ class TextReconciler:
         self.words = prev[:low + i] + new[j:]
 
     def _append(self, new):
-        if self.words and _norm(new[0]) and _norm(new[0]) == _norm(self.words[-1]):
-            new = new[1:]
         if not new:
             return
         last = self.words[-1]
@@ -521,6 +546,8 @@ def is_groq_endpoint(client):
 
 def groq_transcribe(client, model, wav, *, language="", timeout=4.0):
     """One bounded Groq Whisper request; returns (result, headers or None)."""
+    if model not in FREE_MODELS:
+        raise PreviewUnavailable("unsupported preview model")
     if not is_groq_endpoint(client):
         raise PreviewUnavailable("client is not a Groq endpoint")
     kwargs = {
@@ -608,7 +635,7 @@ class PreviewBudget:
         self.min_billed = min_billed
         self.max_strikes = max_strikes
         self.header_reserve = header_reserve
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._events = deque(maxlen=20000)  # (time, billed seconds, kind)
         self._strikes = deque()
         self._cooldown_until = 0.0
@@ -641,6 +668,10 @@ class PreviewBudget:
     def disabled_reason(self):
         with self._lock:
             return self._disabled
+
+    def dispatch_allowed(self):
+        with self._lock:
+            return not self._finals_in_flight and not self._disabled and self.clock() >= self._cooldown_until
 
     def in_flight(self):
         with self._lock:
@@ -692,6 +723,7 @@ class PreviewBudget:
                     pass
                 return
             if outcome == "rate_limited":
+                self._apply_headers(now, headers)
                 self._strikes.append(now)
                 strikes = len(self._strikes)
                 if strikes >= self.max_strikes:
@@ -707,6 +739,12 @@ class PreviewBudget:
                 self._apply_headers(now, headers)
 
     def _apply_headers(self, now, headers):
+        for counter, ceiling in (("audio-seconds", self.limits["audio_seconds_per_hour"]),
+                                 ("tokens", self.limits["audio_seconds_per_hour"])):
+            left = _number(_header(headers, "x-ratelimit-remaining-" + counter), None)
+            if left is not None and left <= max(60.0, ceiling * self.header_reserve):
+                reset = parse_duration(_header(headers, "x-ratelimit-reset-" + counter))
+                self._cooldown_until = max(self._cooldown_until, now + (reset or 3600.0))
         remaining = _number(_header(headers, "x-ratelimit-remaining-requests"), None)
         if remaining is None:
             return
@@ -735,15 +773,49 @@ class PreviewBudget:
 
 
 _DEFAULT_BUDGET = PreviewBudget()
+_BUDGET_PATH = None
+
+
+def configure_budget(path):
+    """A single backend ledger; never open/reset it merely by importing."""
+    global _DEFAULT_BUDGET, _BUDGET_PATH
+    if _BUDGET_PATH != path:
+        from preview_quota import DurablePreviewBudget
+        _DEFAULT_BUDGET = DurablePreviewBudget(path)
+        _BUDGET_PATH = path
+
 
 
 def default_budget():
     return _DEFAULT_BUDGET
 
 
+_FINAL_SCOPE = threading.local()
+
+
+@contextmanager
 def final_priority(audio_seconds):
-    """Wrap every final request: previews yield and its cost is counted."""
-    return _DEFAULT_BUDGET.final_priority(audio_seconds)
+    """Count one attempt even when the ghost job and engine both wrap it."""
+    if getattr(_FINAL_SCOPE, "active", False):
+        yield
+        return
+    _FINAL_SCOPE.active = True
+    try:
+        with _DEFAULT_BUDGET.final_priority(audio_seconds):
+            yield
+    finally:
+        _FINAL_SCOPE.active = False
+
+
+def observe_final_response(*, headers=None, error=None):
+    """Best-effort accounting feedback must never change batch behavior."""
+    try:
+        outcome, retry = classify_error(error) if error is not None else ("ok", None)
+        if error is not None:
+            headers = getattr(getattr(error, "response", None), "headers", None)
+        default_budget().end_preview(None, outcome, retry_after=retry, headers=headers)
+    except Exception:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -876,11 +948,12 @@ class GroqChunkSession:
         self._log = log
         self._queue = queue.Queue(maxsize=max(1, int(settings.max_queue_chunks)))
         self._overflow_samples = 0
-        # Guards the core and partial delivery: after stop()/cancel() return,
-        # no partial callback can still be running or start later.
+        # Guards core state only. Callbacks must never hold this lock;
+        # consumers must reject an inactive/obsolete session at consumption.
         self._lock = threading.RLock()
         self._stopped = threading.Event()
         self._stop_reason = ""
+        self._generation = 0
         self._core = PreviewCore(settings, self.input_rate, budget=budget, log=log)
         self._thread = None
         self._request_thread = None
@@ -936,6 +1009,7 @@ class GroqChunkSession:
                 return
             self._stop_reason = reason
             self._stopped.set()
+            self._generation += 1
         self._core.say(f"preview stopped ({reason})")
 
     def cancel(self):
@@ -1002,9 +1076,15 @@ class GroqChunkSession:
                 raise PreviewUnavailable("Groq client not ready")
             client, model = info
             wav = encode_wav(window.audio, window.rate)
-            # Final check: a stopped, cancelled or stale recording never
-            # reaches Groq, even if its window was already planned.
-            if not self._stopped.is_set():
+            # Revoke queued windows after encoding. This is dispatch
+            # admission, not a wire-level cancellation guarantee (see docs).
+            # Atomic dispatch admission shares the scheduler with final
+            # registration. Expensive encoding/client lookup happen before it.
+            with self._lock:
+                admitted = (not self._stopped.is_set() and self._core.budget.dispatch_allowed()
+                            and (not self.settings.verification_deadline
+                                 or time.time() < self.settings.verification_deadline))
+            if admitted:
                 result, headers = groq_transcribe(
                     client, model, wav, language=self.settings.language,
                     timeout=self.settings.request_timeout,
@@ -1014,6 +1094,7 @@ class GroqChunkSession:
             outcome = "not_sent"
         except Exception as exc:
             outcome, retry_after = classify_error(exc)
+            headers = getattr(getattr(exc, "response", None), "headers", None)
         with self._lock:
             text = self._core.finish_request(
                 window, token, outcome, time.monotonic(), result=result, headers=headers,
@@ -1021,7 +1102,12 @@ class GroqChunkSession:
             )
             if text is None or self._stopped.is_set() or self._on_partial is None:
                 return
+            callback = self._on_partial
+            generation = self._generation
+        # Never execute arbitrary/UI code while holding a lifecycle lock.
+        # Consumers also check session identity and active at delivery time.
+        if self.active and generation == self._generation:
             try:
-                self._on_partial(text)
+                callback(text)
             except Exception:
                 pass

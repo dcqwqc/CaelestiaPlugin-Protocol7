@@ -523,7 +523,12 @@ class MainWiringTests(GhostTestCase):
     def test_enabled_preview_uses_final_groq_client_and_stops_with_recording(self):
         api = Transcriptions("Shown while speaking.")
         self.app.whisper_engine.client = FakeGroqClient(api)
-        config = dict(DEFAULT_CONFIG, streaming_stt_enabled=True, use_groq=True, groq_api_key="gsk_x")
+        config = dict(DEFAULT_CONFIG, streaming_stt_enabled=True, use_groq=True, groq_api_key="gsk_x",
+                      streaming_stt_free_tier_verified=True, streaming_stt_quota_partition_verified=True,
+                      streaming_stt_verified_at=time.time(), streaming_stt_quota_ledger="/offline-test-ledger")
+        patch = mock.patch.object(st, "configure_budget")
+        patch.start()
+        self.addCleanup(patch.stop)
         app = self.make_app(config)
         with mock.patch.object(st, "settings_from_config",
                                return_value=st.PreviewSettings(first_preview_seconds=1.0, idle_timeout=30.0)):

@@ -21,13 +21,18 @@ DEFAULT_CONFIG = {
     "groq_api_key": "",
     "groq_model": "whisper-large-v3-turbo",
     # Live preview while speaking is opt-in and display-only. "groq-chunks"
-    # reuses the Groq key and model above (no separate credential or paid
-    # provider) within a conservative free-tier budget. The final always
+    # reuses the Groq key and model above. Provider billing protection needs
+    # independent verification; local budgets cannot prove zero cost. The final always
     # transcribes the complete recording once. Obsolete streaming_stt_* keys
     # from older builds may remain in config.json and are ignored.
     "streaming_stt_enabled": False,
     "streaming_stt_provider": "groq-chunks",
     "streaming_stt_preview_interval_seconds": 5.0,
+    # Explicit assertions; only the provider can confirm actual billing tier.
+    "streaming_stt_free_tier_verified": False,
+    "streaming_stt_quota_partition_verified": False,
+    "streaming_stt_verified_at": 0,
+    "streaming_stt_quota_ledger": "",
     "enable_llm_rewrite": False,
     "llm_backend": "Built-in (Llama.cpp)",
     "llama_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",

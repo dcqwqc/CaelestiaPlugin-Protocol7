@@ -1,6 +1,6 @@
 # Live Preview Acceptance Note
 
-Status: **draft, pending review and hardware verification.** This note is
+Status: **BLOCKED — provider protection, strict transport exclusion and UI publication gates unresolved.** This note is
 not a release approval.
 
 ## Scope
@@ -35,7 +35,9 @@ accuracy of the real service was measured.**
    the complete original audio to the final path exactly once per attempt.
    Preview text is never inserted or saved.
 2. **Opt-in and Groq-only.** Default config creates nothing. Previews need
-   the switch, provider `groq-chunks`, `use_groq` and a Groq key. Legacy
+   the switch, provider `groq-chunks`, `use_groq`, a Groq key, an allowlisted
+   model, fresh explicit provider/partition assertions and a healthy warmed
+   durable ledger. Legacy
    `openai-realtime` configs stay off. Feature sources contain no OpenAI,
    Realtime or websocket route; non-Groq or non-HTTPS clients are refused.
 3. **Capture safety.** The capture callback only enqueues; no request runs
@@ -47,13 +49,15 @@ accuracy of the real service was measured.**
    1 s; gaps are marked, never merged.
 6. **Budget.** RPM cap with finals counted, hourly/daily audio caps with
    10 s minimum billing, daily request cap, single flight, finals pre-empt
-   previews, 429 retry-after cooldown with escalation to disable, auth
-   disable, rate-limit header reserve, refund when nothing was sent.
+   previews at admission, durable two-host quota partitions, 429 retry-after
+   cooldown with escalation to disable, auth disable, rate-limit header
+   reserve, refund when nothing was sent. Strict transport ordering is blocked.
 7. **Lifecycle.** Stop/cancel never wait for a request and suppress late
-   results; idle or stopped sessions never call Groq; request cap per
+   results; idle/stopped sessions reject new dispatch admission (actual SDK
+   wire transmission remains a blocker); request cap per
    recording; cancel, dismiss, final timeout, focus change and queued Enter
    keep their existing semantics.
-8. **Stable text.** Overlap de-duplication, cut-word completion, edge
+8. **Stable text.** Multiword overlap alignment, intentional repetition, cut-word completion, edge
    punctuation repair, frozen prefix, bounded length.
 9. **Privacy.** No key or transcript in logs, reprs or stats.
 10. **Shell contract.** Settings property types match their `SettingMeta`
@@ -65,6 +69,14 @@ accuracy of the real service was measured.**
 Record evidence (command, host, commit, outcome) for each gate. Do not mark
 a gate from this note alone.
 
+- [ ] **G0 Provider protection and organization accounting:** provider-confirmed
+      no-charge protection, two-producer partition assertions, warmed durable
+      ledgers and an independently verified configuration. Account tier is an
+      external fact; this code cannot verify it or cap unrestricted finals.
+- [ ] **G0b Strict transport/UI ordering:** eliminate the gap between dispatch
+      admission and actual SDK HTTP send, and add epoch-aware UI publication
+      without waiting on slow preview work. Current synchronous SDK does not
+      establish this gate.
 - [ ] **G1 Reproducible tests** on an independently configured host at this
       commit or a descendant.
 - [ ] **G2 Default safety:** a fresh install with default configuration
@@ -81,7 +93,7 @@ a gate from this note alone.
 - [ ] **G6 Tachibana hardware check** (`ssh tachibana uname -a` first; Linux
       required): same checks under Hyprland, plus a screenshot of the hover
       panel showing a preview.
-- [ ] **G7 Reviewer sign-off** on the recorded evidence for G1–G6.
+- [ ] **G7 Reviewer sign-off** on the recorded evidence for all gates, including G0/G0b.
 
 ## Not verified
 
@@ -91,3 +103,9 @@ a gate from this note alone.
 - the preview's appearance in the Caelestia shell (no QML linter or shell
   run was available; QML was checked by contract tests only);
 - any deployment. Nothing was deployed or enabled on Mirai or Tachibana.
+
+Corrective validation preserves the original test scenarios; fixtures now supply
+explicit safety assertions. The repetition test and synthetic benchmark bounds
+reflect preservation of ambiguous repetition (up to 3 duplicate boundary words,
+14% simulated word error), rather than claiming one-word deduplication is safe.
+See [live-transcription.md](live-transcription.md) for the exact limitations.
