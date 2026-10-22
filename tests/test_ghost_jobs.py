@@ -54,9 +54,16 @@ class GhostJobsTests(unittest.TestCase):
         self._vision_patcher.start()
         self.addCleanup(self._vision_patcher.stop)
 
+    def make_manager(self, app):
+        manager = GhostJobs(app)
+        # Jobs expose status before their final persistence write completes.
+        # Drain all writes before removing temporary state or home patches.
+        self.addCleanup(manager.executor.shutdown, wait=True)
+        return manager
+
     def test_switching_windows_retains_result_without_injection(self):
         app = App()
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         target = Target("0x123", "zen", "eDP-1", 110, 220)
         with patch.object(Target, "same_window_active", return_value=False), patch("ghost_jobs.add_history"):
             job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
@@ -68,7 +75,7 @@ class GhostJobsTests(unittest.TestCase):
 
     def test_same_window_autoinserts_once(self):
         app = App()
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         target = Target("0x123", "zen", "eDP-1", 110, 220)
         with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
             job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
@@ -88,7 +95,7 @@ class GhostJobsTests(unittest.TestCase):
             resume.wait(1)
             return "safe result"
         app.whisper_engine.transcribe = transcribe
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         target = Target("0x123", "zen", "eDP-1", 100, 100)
         with patch.object(Target, "same_window_active", return_value=True), patch("ghost_jobs.add_history"):
             job = manager.enqueue(np.ones(16000, dtype=np.float32), target, focus_epoch=10)
@@ -102,7 +109,7 @@ class GhostJobsTests(unittest.TestCase):
 
     def test_error_keeps_chip_and_can_retry(self):
         app = App("")
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         with patch("ghost_jobs.add_history"):
             job = manager.enqueue(np.ones(16000, dtype=np.float32))
             await_status(manager, "error")
@@ -121,7 +128,7 @@ class GhostJobsTests(unittest.TestCase):
             go.wait(2)
             return "late"
         app.whisper_engine.transcribe = slow
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         with patch("ghost_jobs.add_history"):
             job = manager.enqueue(np.ones(16000, dtype=np.float32))
             self.assertTrue(started.wait(1))
@@ -139,7 +146,7 @@ class GhostJobsTests(unittest.TestCase):
             release.wait(1)
             return "late text"
         app.whisper_engine.transcribe = slow
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         manager.job_timeout_seconds = 0.045
         with patch("ghost_jobs.add_history"):
             target = Target("0x123", "zen", "eDP-1", 100, 100)
@@ -154,13 +161,13 @@ class GhostJobsTests(unittest.TestCase):
 
     def test_pending_text_restored_without_stale_window_injection(self):
         app = App()
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         target = Target("0xABC", "zen", "eDP-1", 200, 250)
         with patch("ghost_jobs.add_history"), patch.object(Target, "same_window_active", return_value=False):
             job = manager.enqueue(np.ones(16000, dtype=np.float32), target)
             await_status(manager, "ready")
             manager._persist()
-        restored = GhostJobs(App())
+        restored = self.make_manager(App())
         self.assertEqual(restored.snapshot()[0]["status"], "ready")
         self.assertFalse(restored.jobs[job.id].target.same_window_active())
         self.assertEqual(restored.jobs[job.id].text, "test dictation")
@@ -172,7 +179,7 @@ class GhostJobsTests(unittest.TestCase):
 
     def test_ready_result_archives_without_losing_history(self):
         app = App()
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         manager.ready_visible_seconds = 0.07
         with patch("ghost_jobs.add_history") as saved:
             job = manager.enqueue(np.ones(16000, dtype=np.float32))
@@ -186,24 +193,24 @@ class GhostJobsTests(unittest.TestCase):
 
     def test_restored_result_schedules_auto_hide(self):
         app = App()
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         with patch("ghost_jobs.add_history"):
             job = manager.enqueue(np.ones(16000, dtype=np.float32))
             await_status(manager, "ready")
             manager._persist()
         with patch.object(GhostJobs, "_archive_after") as schedule:
-            restored = GhostJobs(App())
+            restored = self.make_manager(App())
             self.assertEqual(restored.snapshot()[0]["id"], job.id)
             schedule.assert_called_once_with(job.id, "ready", restored.ready_visible_seconds)
 
     def test_ready_stays_visible_long_enough_for_manual_recovery(self):
-        manager = GhostJobs(App())
+        manager = self.make_manager(App())
         self.assertGreaterEqual(manager.ready_visible_seconds, 40.0)
         self.assertGreaterEqual(manager.error_visible_seconds, 12.0)
 
     def test_failed_recording_auto_dismisses(self):
         app = App("")
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         manager.error_visible_seconds = .06
         job = manager.enqueue(np.ones(16000, dtype=np.float32))
         await_status(manager, "error")
@@ -213,7 +220,7 @@ class GhostJobsTests(unittest.TestCase):
 
     def test_new_processing_job_is_not_hidden_by_old_error(self):
         app = App("")
-        manager = GhostJobs(app)
+        manager = self.make_manager(app)
         old = manager.enqueue(np.ones(16000, dtype=np.float32))
         await_status(manager, "error")
         hold = threading.Event()

@@ -479,6 +479,8 @@ class LivePreviewPopup(Gtk.Window):
 
 class UIManager:
     def __init__(self, config, audio_recorder):
+        from preview_publication import PreviewPublication
+        self._preview_publication = PreviewPublication()
         self.config = config
         self.audio_recorder = audio_recorder
         self.app = Gtk.Application(application_id="com.whisper.flow")
@@ -502,6 +504,7 @@ class UIManager:
             self.preview = LivePreviewPopup(app)
 
     def show(self):
+        self._preview_publication.bind(None)
         if self.overlay:
             self.overlay.set_visible(True)
             self.overlay.visualizer.is_processing = False
@@ -515,6 +518,7 @@ class UIManager:
         return False
 
     def hide(self):
+        self._preview_publication.bind(None)
         if self.overlay:
             self.overlay.visualizer.is_processing = False
             self.overlay.visualizer.animate_to(0.0)
@@ -523,10 +527,20 @@ class UIManager:
             self.preview.hide_preview()
 
     def set_processing_state(self):
+        self._preview_publication.bind(None)
         if self.overlay:
             self.overlay.visualizer.is_processing = True
         if self.preview:
             self.preview.hide_preview()
+
+    def bind_preview_session(self, session):
+        self._preview_publication.bind(session)
+
+    def publish_preview(self, session, text):
+        def consume():
+            self._preview_publication.consume(session, text, self.set_live_text)
+            return False
+        GLib.idle_add(consume)
 
     def set_live_text(self, text):
         if self.preview:

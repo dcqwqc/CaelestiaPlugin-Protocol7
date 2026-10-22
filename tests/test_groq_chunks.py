@@ -441,11 +441,11 @@ class ReconcilerTests(unittest.TestCase):
         r.add("The review takes an hour.", overlap=True)
         self.assertEqual(r.text, "we can start The review takes an hour.")
 
-    def test_single_word_match_does_not_delete_intentional_repetition(self):
+    def test_stable_single_word_suffix_prefix_is_deduplicated(self):
         r = st.TextReconciler()
         r.add("first part ends here")
         r.add("here comes something new", overlap=True)
-        self.assertEqual(r.text, "first part ends here here comes something new")
+        self.assertEqual(r.text, "first part ends here comes something new")
 
     def test_lowercase_continuation_removes_edge_full_stop(self):
         r = st.TextReconciler()

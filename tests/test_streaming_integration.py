@@ -83,6 +83,15 @@ class FakeUI:
     def set_jobs(self, rows):
         self.rows.append(rows)
 
+    def bind_preview_session(self, session):
+        from preview_publication import PreviewPublication
+        if not hasattr(self, 'publication'):
+            self.publication = PreviewPublication()
+        self.publication.bind(session)
+
+    def publish_preview(self, session, text):
+        self.publication.consume(session, text, self.live.append)
+
     def set_live_text(self, text):
         self.live.append(text)
 
@@ -197,6 +206,15 @@ class Transcriptions:
 
 
 class FakeGroqClient:
+    def start_preview_transport(self, **kwargs):
+        from concurrent.futures import Future
+        future = Future()
+        try:
+            future.set_result(self.audio.transcriptions.create(**kwargs))
+        except BaseException as error:
+            future.set_exception(error)
+        return future
+
     def __init__(self, transcriptions):
         self.audio = types.SimpleNamespace(transcriptions=transcriptions)
         self.base_url = "https://api.groq.com/openai/v1"

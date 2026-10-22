@@ -1,103 +1,149 @@
 # Corrective implementation validation
 
-Scope: local corrective iteration based on the independent interim review in
-`pre-review-result.txt`, against committed candidate `8342a52`, on the same
-`feature/live-transcription-20261021` branch. No deployment, merge or remote
-push is authorized or performed. This is **not release sign-off**.
+This correction follows the complete rejected review in
+`reconciled-review-result.txt`, which independently reviewed `62b6058` against
+`56d68a1`. Work remains on `feature/live-transcription-20261021`. The earlier
+report's claim that this branch was still at `8342a52` was stale.
 
-Implemented corrections:
+**Release remains BLOCKED.** This change does not complete the approved
+incremental-preview release: a production nonblocking transport integration
+and independent acceptance are still missing. The ordinary synchronous Groq
+SDK now fails closed for previews; full-recording batch finals still work.
+Do not enable or deploy previews on the strength of these offline results.
 
-- Default-off previews now require fresh explicit no-charge protection and
-  two-producer quota assertions, an allowlisted Whisper model and a healthy
-  warmed durable ledger. Those assertions are consent and externally verified
-  prerequisites, not proof of provider account status.
-- SQLite reservations serialize local processes. Two hosts each receive half
-  of the supplied organization limits; preview admission uses only 4 RPM and
-  40% of each host's other ceilings, counting finals and a 10-second minimum.
-  Events, cooldowns, strikes and final markers survive backend restart. Missing
-  history warms for 24 hours; corruption, clock rollback or contention fail
-  closed. A durable unsafe flag covers accounting failure. No service added.
-- Configured ledgers retain final accounting with the switch off. Nested
-  ghost/engine priority scopes count one attempt. Final success/error headers
-  update preview throttling. Full final audio, selected final model, JSON
-  response, rewriting and fallback semantics are retained.
-- Dispatch admission rechecks stop, final priority, cooldown and assertion
-  expiry after expensive client lookup/WAV encoding. Callbacks execute outside
-  lifecycle locks and the application rejects inactive session delivery.
-- Speech detection handles initial/quiet sustained voiced signals without
-  learning them as noise, and rejects tested energetic colored/broadband noise.
-  Text reconciliation preserves nonoverlapping and ambiguous one-word repeats.
+## Implemented and tested
 
-Validation interpreter:
+- A shared process-local dispatch scheduler serializes stop/final revocation
+  with nonblocking transport initiation. Epochs are captured before reserving
+  windows. Even a final that starts and finishes while a request is queued
+  revokes that request. Stop never acquires the core/VAD or ledger lock.
+- The scheduler requires `start_preview_transport(**request)` to initiate
+  transport before returning a Future, without awaiting a response. Ordinary
+  SDK `create` does not satisfy this contract and is never used as a fallback
+  by a recording session. Only offline fakes implement the new primitive here.
+  A test fake records its simulated HTTP send synchronously under the scheduler
+  lock and completes its response on another thread. Merely putting SDK work
+  on a thread would reproduce the rejected race and is not an implementation.
+- UI publication carries session identity to the consumer. GTK queues a call
+  that rechecks identity at consumption, then mutates UI under the same lock
+  used to change identity. The native bridge uses the same gate. Native stdout
+  publication takes its snapshot inside the write lock, preventing an older
+  snapshot from following a newer snapshot. Main never routes cloud partials
+  through the generic local-preview setter.
+- Stable suffix/prefix overlap, including `ends here` + `here comes`, is
+  deduplicated. Contained short hypotheses do not remove committed trailing
+  words. Chinese characters align without inserted spaces. Emphatic `no`
+  repeats and tested boundary punctuation remain. Text-only overlap cannot
+  infer the timing of every possible intentional repetition.
+- Queue entries carry absolute sample positions. A/B before dropped C are
+  consumed before the discontinuity; D starts after the hole. Completion of
+  an older in-flight window cannot clear a newer discontinuity.
+- Numeric/string Retry-After values retain their entire duration, including
+  7200 seconds across new sessions and ledger restart. The existing bounded
+  worker polling interval does not truncate the persisted deadline.
+- A 129-tap Kaiser-windowed sinc FIR precedes downsampling from 48/44.1 kHz.
+  Filtering and interpolation run on the request worker. Both rates meet the
+  test threshold of 60 dB rejection of a 12 kHz tone relative to a preserved
+  1 kHz tone. Six-second conversion has a generous one-second test ceiling;
+  it is a workload bound, not a real-time scheduling guarantee.
+- Existing hotkeys, configuration keys, full final audio, batch models and
+  explicit local selection remain. Test fixtures now drain ghost executors
+  before removing temporary state, fixing an observed cleanup/write race.
+
+## Offline evidence
+
+Interpreter:
 `/home/qwqc/.local/state/loom-fleet/validation-venvs/protocol7/bin/python`.
 
-Reproducible commands:
-
 ```
-python -m py_compile config.py main_linux.py streaming_stt.py preview_quota.py whisper_engine.py \
-  tests/test_groq_chunks.py tests/test_streaming_integration.py \
-  tests/test_preview_corrections.py tests/run_offline_preview.py
-python tests/run_offline_preview.py
-python tests/test_groq_chunks.py --benchmark
+PYTHONDONTWRITEBYTECODE=1 <interpreter> tests/run_offline_preview.py
+<interpreter> tests/test_groq_chunks.py --benchmark
 git diff --check
 ```
 
-The guarded runner covers all 110 original preview tests, 17 additional
-corrective regressions and 58 compatible batch/focus/queue/Enter regressions:
-**185 tests passed**. Its selected suites are listed in the runner. Temporary
-state redirects configuration/history and home-derived paths; process-wide
-socket guards fail the run on an unexpected connection attempt. Concurrent
-process tests use local temporary SQLite files. Compilation and whitespace
-checks pass. No real-provider accuracy, latency or microphone tests occurred.
+The guarded runner contains all 185 baseline tests plus 20 new deterministic
+adversarial tests. It redirects home/config/history into scoped temporary
+state, blocks outgoing socket connection/sendto methods and mocks the real
+Groq transcription SDK entry point. Local SQLite restart/process tests remain
+included. It never loads user credentials or invokes a real provider.
 
-Two further older suites (`test_hotkey_recognition`, `test_ghost_hotkey_cancel`)
-could not import because this venv lacks `evdev`. They are not represented as
-passed. No dependency or device installation was attempted.
+Two separate guarded processes passed all **205 tests** (185 baseline scenarios
+plus 20 added tests): 46.271 seconds after the Chinese-punctuation change, and
+53.065 seconds after the final repeated-word punctuation refinement. Both
+reported **zero forbidden network/SDK attempts**. Fourteen Python files compile
+without writing bytecode, and `git diff --check` passes. These are lead-run
+fresh-process checks, not an independent reviewer PASS.
 
-An earlier broad run exposed the original test helper's module-isolation bug:
-replacing `sys.modules['whisper_engine']` invalidated another suite's patch
-and caused a failed real-SDK request attempt with its literal dummy key
-(`APIConnectionError`). No user key was loaded for that test and no successful
-provider response was observed. The helper now loads its engine privately;
-the final guarded runner additionally prevents all connections. The earlier
-run also attempted a history write that the filesystem rejected; the guarded
-runner redirects all state to a temporary directory. These earlier attempts
-are not counted as successful offline validation.
+A prior run failed on the stop-idempotence regression introduced during this
+iteration; that was fixed. Another exposed a pre-existing ghost-test cleanup
+race (`Directory not empty`) because status became visible before persistence
+finished; executor cleanup now waits before deleting fixtures. Neither failed
+run is counted as a successful suite.
 
-Synthetic benchmark, seeds 7/11/23/42: preview word error ratios
-0.076/0.067/0.057/0.134 versus naive 0.253/0.281/0.205/0.244; adjacent duplicate
-counts 1/3/2/3; virtual first updates 4.38/4.42/4.69/4.04 seconds. Original
-single-word deletion expectations were updated to preserve intentional repeats;
-benchmark bounds now allow 14% simulated word error and three ambiguous
-boundary duplicates. All original test scenarios remain. These figures use an
-in-memory simulation budget and mock latency, not production durable admission
-or cloud measurements.
+Synthetic seeds 7/11/23/42 use virtual time and generated responses. They do
+not measure cloud WER, latency, cost, VAD on microphones or device rendering.
+The acceptance bounds remain preview WER <=14%, adjacent duplicates <=3,
+revision depth <=8, first virtual preview <=6 s, mean updates <=7 s, zero
+silent requests, and <=12 requests/minute under the simulation budget.
+Synthetic preview WER for seeds 7/11/23/42 was 0.063/0.045/0.034/0.098,
+with adjacent duplicate counts 0/1/0/0 and maximum revision depth 3 tokens.
+Virtual first updates were 4.38/4.42/4.69/4.04 seconds. These measurements
+precede the final punctuation-only refinement; the complete guarded suite
+reruns and passes the same benchmark acceptance assertions afterward.
+Measured capture enqueue overhead in this run was 1.04 microseconds/call;
+16 kHz window/WAV preparation was 0.23 milliseconds. These are local samples,
+not device or production guarantees.
 
-Unresolved blockers:
+## Explicit invariants and remaining blockers
 
-1. Only the provider can confirm actual organization billing tier and
-   no-charge protection. No evidence was obtained here. Organization consumer
-   completeness and two-host partition assertions also require verification.
-   Unrestricted finals cannot be globally capped without changing the required
-   always-proceed batch behavior; previews alone are bounded by this policy.
-2. The synchronous SDK still has a gap between synchronized dispatch admission
-   and actual HTTP transport. A previously admitted call may send after stop
-   returns or final registration. Holding a lock through the request would
-   violate nonblocking stop/final requirements. A cancellable transport design
-   and independent adversarial review remain necessary.
-3. An already executing UI callback cannot be withdrawn. Atomic epoch-aware
-   publication at the UI consumer is not implemented. Session checks suppress
-   ordinary late delivery but are not proof of atomic publication ordering.
-4. No real microphones, provider limits/headers or Caelestia visual behavior
-   were checked. Keep previews disabled pending these gates and independent
-   final review. No Mirai/Tachibana rollout was performed.
+1. In a supported transport, dispatch initiation and stop/final registration
+   have one total order. Revocation first means no initiation. Initiation first
+   means already in flight; it cannot be retracted or refunded merely because
+   stop follows. Waiting on a response occurs outside lifecycle locks. Tests
+   pause immediately before the scheduler boundary, exercise final completion,
+   contention, core-lock contention, queued UI work and in-flight callbacks.
+2. No production Groq adapter meeting that nonblocking initiation contract is
+   implemented or verified here. Consequently the synchronous production SDK
+   cannot send previews, even when assertions are set. Future adapters require
+   an actual HTTP-boundary test; a callable attribute or fake Future alone is
+   not production evidence. Multi-process transport/final serialization also
+   needs independent verification beyond the process-local scheduler and
+   durable ledger checks. This is a P1 release blocker, not a completed feature.
+3. Actual Groq FREE organization status/no-charge protection is unverified.
+   Endpoint/model allowlists and assertions do not prove billing protection.
+   Mirai/Tachibana receive separate halves of the supplied organization limits;
+   the ledger does not discover other consumers or coordinate host usage.
+   Unknown producers, paid usage, stale assertions or missing history must
+   keep previews disabled. Unrestricted existing finals can exceed a partition;
+   no total-cost guarantee is claimed or proved by these offline tests.
+4. No microphone, live provider/header/429, native QML rendering, GUI interaction,
+   device deployment, push, merge or SUMI edits occurred. Loom task-card tools
+   were unavailable. No independent review PASS is claimed.
 
-## Local commit blocked by filesystem permissions
+## Exact Git and delivery status
 
-The requested local commit was attempted after validation. Both staging and
-commit failed because this workspace exposes `.git` read-only:
+The staging attempt failed with:
 `Unable to create .../.git/index.lock: Read-only file system`.
-The branch remains `feature/live-transcription-20261021` at `8342a52` and all
-corrective files remain in the working tree. No index, branch ref, remote or
-deployed device was changed. A writable Git checkout is required to create
-the authorized commit; no approval escalation is available in this session.
+No files were staged and no commit was created. HEAD remains
+`62b60586bdbfb733f504979caacc8fa5cefb0223` on
+`feature/live-transcription-20261021`; all fifteen files below are scoped
+working-tree changes. No push, merge, device changes or deployment occurred.
+The supervised pipeline must not treat these offline results as a release PASS.
+
+Changed files:
+
+- `streaming_stt.py`
+- `preview_quota.py`
+- `preview_publication.py` (new)
+- `main_linux.py`
+- `native_bridge.py`
+- `ui_linux.py`
+- `tests/run_offline_preview.py`
+- `tests/test_release_corrections.py` (new)
+- `tests/test_groq_chunks.py`
+- `tests/test_streaming_stt.py`
+- `tests/test_streaming_integration.py`
+- `tests/test_ghost_jobs.py`
+- `tests/test_queue_send.py`
+- `docs/live-transcription.md`
+- `docs/live-preview-corrective-validation.md`

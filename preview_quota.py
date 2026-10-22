@@ -139,6 +139,7 @@ class DurablePreviewBudget(PreviewBudget):
     def final_priority(self, seconds):
         # Never hold a ledger lock while transcribing, nor prevent the final
         # when another process owns the ledger or the disk is unavailable.
+        self.scheduler.revoke(final_delta=1)
         registered = False
         try:
             with self._lock:
@@ -150,6 +151,7 @@ class DurablePreviewBudget(PreviewBudget):
         try:
             yield
         finally:
+            self.scheduler.revoke(final_delta=-1)
             if registered:
                 try:
                     with self._lock:

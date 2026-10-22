@@ -92,12 +92,14 @@ class FakeTranscriptions:
         self.max_active = 0
         self._lock = threading.Lock()
 
-    def create(self, **kwargs):
+    def _begin(self, kwargs):
         with self._lock:
             self.calls.append(kwargs)
             self.threads.append(threading.current_thread())
             self.active += 1
             self.max_active = max(self.max_active, self.active)
+
+    def _response(self):
         try:
             if self.gate is not None:
                 self.gate.wait(5.0)
@@ -109,8 +111,29 @@ class FakeTranscriptions:
             with self._lock:
                 self.active -= 1
 
+    def create(self, **kwargs):
+        self._begin(kwargs)
+        return self._response()
+
+    def start(self, **kwargs):
+        from concurrent.futures import Future
+        future = Future()
+        # The fake HTTP send is recorded before returning, under the scheduler
+        # lock. Only response completion runs asynchronously.
+        self._begin(kwargs)
+        def complete():
+            try:
+                future.set_result(self._response())
+            except BaseException as error:
+                future.set_exception(error)
+        threading.Thread(target=complete, daemon=True).start()
+        return future
+
 
 class FakeClient:
+    def start_preview_transport(self, **kwargs):
+        return self.audio.transcriptions.start(**kwargs)
+
     def __init__(self, transcriptions):
         self.audio = types.SimpleNamespace(transcriptions=transcriptions)
         self.base_url = "https://api.groq.com/openai/v1"
@@ -225,6 +248,8 @@ class CaptureThreadTests(SessionTestCase):
         for _ in range(20):  # worker not started yet: queue saturates
             s.push_audio(voiced(0.032))
         s.start()
+        self.assertTrue(wait_until(lambda: s._queue.empty()))
+        s.push_audio(voiced(0.032))
         self.assertTrue(wait_until(lambda: s.stats()["overflows"] == 1))
         self.push(s, voiced(0.6), chunk=256)
         self.assertTrue(s.active)

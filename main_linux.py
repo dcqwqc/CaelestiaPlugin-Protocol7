@@ -175,6 +175,9 @@ class Protocol7App:
                 lambda text, live=session: self._on_stream_partial(live, text)
             )
             self._stream_session = session
+            binder = getattr(self.ui_manager, "bind_preview_session", None)
+            if binder is not None:
+                binder(session)
             session.start()
             self.audio_recorder.attach_stream_listener(session.push_audio)
         except Exception as error:
@@ -189,10 +192,10 @@ class Protocol7App:
         # history or logged. Events from a finished session are ignored.
         if not self.is_active or self._stream_session is not session or not session.active:
             return
-        setter = getattr(self.ui_manager, "set_live_text", None)
+        setter = getattr(self.ui_manager, "publish_preview", None)
         if setter is not None:
             try:
-                setter(text)
+                setter(session, text)
             except Exception:
                 pass
 

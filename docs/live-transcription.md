@@ -75,7 +75,7 @@ organization bound while also preserving unrestricted finals. Other clients,
 quota changes and missing provider counters remain external uncertainty.
 
 Both final and preview responses feed throttling when headers are available.
-429 retains the reservation, applies retry-after (minimum 60 seconds), doubles
+429 retains the reservation, applies the full retry-after duration (minimum 60 seconds, with no one-hour truncation), doubles
 cooldown on repeated strikes and durably disables previews after three strikes
 in a day. Low request/audio counters reserve capacity for finals; unknown
 headers never increase local capacity. Final request payloads, models and
@@ -99,31 +99,36 @@ is not a validated real-microphone VAD**: tonal noise may pass and unvoiced
 speech may be missed. It gates previews only.
 
 Segment confidence and known decoder-artifact filtering apply to previews.
-Text alignment needs at least two matching words before revising the tail;
-ambiguous single-word boundaries and nonoverlapping repetition are preserved.
-Only the last 8 words can change and text is bounded to 300 words. Conservatism
-can leave duplicates. Gaps are marked with an ellipsis.
+Stable suffix/prefix words and Chinese character overlaps are aligned;
+contained short results never remove later committed words. Emphatic boundary
+repeats are preserved in tested cases. Only the last 8 tokens can change and
+text is bounded to 300 tokens. Chinese characters count as individual tokens.
+Gaps are marked with an ellipsis. A worker-side 129-tap windowed-sinc low-pass
+filter precedes 48/44.1 kHz downsampling to 16 kHz; capture only queues audio.
 
-## Lifecycle limitation — release blocker
+## Dispatch and UI consumers — production transport remains blocked
 
-Stop invalidates the session generation immediately; encoding/client lookup
-are followed by synchronized dispatch admission, checking final priority,
-stopped state, cooldown and assertion expiry. A final arriving before admission
-revokes the queued preview. Already admitted requests remain charged and late
-results are ignored. Callbacks run outside lifecycle locks; the application
-checks session identity and activity when consuming a callback.
+Stop/final registration changes a synchronized scheduler epoch. Queued windows
+retain their original epoch and cannot start transport after revocation, even
+if a final has already completed. The scheduler accepts only a nonblocking
+transport-initiation primitive returning a Future. Response waits, encoding,
+ledger work and callbacks happen outside its lock. Stop also avoids the core
+lock used for VAD. Already initiated transport cannot be retracted; its
+reservation remains charged and obsolete responses are ignored.
 
-**Strict wire-level exclusion remains unresolved:** with the synchronous SDK,
-there is still a scheduling gap between dispatch admission and the SDK's
-actual HTTP send. An admitted request can reach transport after stop returns
-or after final registration. Holding the lifecycle lock through a synchronous
-request would block stop/final processing, which is unacceptable. This candidate
-therefore does not claim the stronger “no HTTP send after stop” guarantee.
-A callback already executing cannot be withdrawn either; UI consumers need
-an epoch-aware delivery API to reject stale work atomically at publication.
-Independent transport/UI review and a cancellable transport integration are
-required before release. Existing in-flight HTTP cannot be refunded/cancelled
-merely by discarding its result.
+**The ordinary synchronous Groq SDK does not implement this primitive.** A
+recording session now refuses to send through that SDK rather than retaining
+the rejected admission-to-HTTP race. No production adapter is implemented in
+this correction. Preview operation is therefore blocked pending transport
+integration and independent HTTP-boundary and multi-process verification.
+The existing full-recording final SDK path remains available with previews off
+or unavailable. A mock start method is not evidence about real HTTP behavior.
+
+Partials carry session identity through main_linux to the actual UI consumer.
+The GTK consumer queues to its main loop and checks identity atomically with
+UI mutation; the native bridge applies the same identity gate. Binding another
+recording invalidates old queued callbacks. Native state snapshots serialize
+with stdout writes. These are offline consumer checks, not visual QML evidence.
 
 ## Offline validation
 
@@ -132,7 +137,7 @@ Use the private validation interpreter requested for this task:
 ```
 /home/qwqc/.local/state/loom-fleet/validation-venvs/protocol7/bin/python -m unittest \
   tests.test_groq_chunks tests.test_streaming_stt tests.test_streaming_integration \
-  tests.test_streaming_plugin_config tests.test_preview_corrections
+  tests.test_streaming_plugin_config tests.test_preview_corrections tests.test_release_corrections
 # Broader regressions with process-wide network guards and temporary state:
 /home/qwqc/.local/state/loom-fleet/validation-venvs/protocol7/bin/python tests/run_offline_preview.py
 ```

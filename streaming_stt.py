@@ -1,6 +1,10 @@
 """Opt-in, display-only live preview from overlapping Groq Whisper windows.
 
-Provider ``groq-chunks`` periodically sends the most recent ~6 s of speech
+Production previews fail closed until a verified nonblocking transport adapter
+exists. The synchronous Groq SDK remains available only to the batch final.
+Offline fake transports exercise the scheduler contract below.
+
+With a supported adapter, provider ``groq-chunks`` periodically sends the most recent ~6 s of speech
 (1 s overlapping the previous window) to the Groq Whisper client and model
 already selected for final dictation. There is no separate credential,
 provider account or billing route, and no other provider exists here.
@@ -299,6 +303,7 @@ class WindowPlanner:
         self._buffered = 0
         self._buffer_start = 0
         self._lost_since_sent = False
+        self._last_discontinuity = 0
 
     def add(self, chunk):
         data = np.asarray(chunk, dtype=np.float32).reshape(-1)
@@ -323,6 +328,7 @@ class WindowPlanner:
         self._buffer_start = self.total
         self.considered_end = max(self.considered_end, self.total)
         self._lost_since_sent = True
+        self._last_discontinuity = self.total
 
     def buffered_samples(self):
         return self._buffered
@@ -355,7 +361,7 @@ class WindowPlanner:
         self.windows = max(self.windows, window.index)
         self.sent_end = window.end
         self.considered_end = max(self.considered_end, window.end)
-        self._lost_since_sent = not delivered
+        self._lost_since_sent = not delivered or self._last_discontinuity > window.end
 
 
 # --------------------------------------------------------------------------
@@ -388,10 +394,11 @@ class TextReconciler:
 
     @property
     def text(self):
-        return " ".join(self.words)
+        text = " ".join(self.words)
+        return re.sub(r"(?<=[\u3000-\u9fff\uff00-\uffef]) (?=[\u3000-\u9fff\uff00-\uffef])", "", text)
 
     def add(self, text, *, overlap=False, gap=False):
-        new = str(text or "").split()
+        new = re.findall(r"[\u3040-\u30ff\u3400-\u9fff][、。，！？；：]*|[^\s\u3040-\u30ff\u3400-\u9fff]+", str(text or ""))
         if not new:
             return False
         before = list(self.words)
@@ -426,10 +433,26 @@ class TextReconciler:
         # Align a suffix of the previous text with the start of the new
         # window position by position, so one misrecognized word inside the
         # overlap does not break the match. The first aligned word must agree.
+        # Exact suffix/prefix overlap, including one stable word. Preserve
+        # short emphatic repeats: text alone cannot resolve their timing.
+        for size in range(min(len(tail), len(head)), 0, -1):
+            if tail[-size:] == head[:size] and all(head[:size]):
+                if size == 1 and (len(prev) < 2 or head[0] in {"no", "yes", "oh", "ha"}):
+                    continue
+                self.words = prev[:-size] + new
+                return
+        # A short contained hypothesis is not evidence of a deletion.
+        normalized = [_norm(w) for w in prev]
+        whole = [_norm(w) for w in new]
+        ambiguous_repeat = len(whole) == 1 and whole[0] in {"no", "yes", "oh", "ha"}
+        if not ambiguous_repeat and any(normalized[i:i+len(whole)] == whole for i in range(len(prev)-len(whole)+1)):
+            return
         best = None
         for i in range(len(tail)):
             for j in range(min(len(head), self.max_head_skip + 1)):
                 if not same(tail[i], head[j], i == last):
+                    continue
+                if len(new) - j < len(tail) - i:
                     continue
                 pairs = [(i + m, j + m) for m in range(len(tail) - i) if j + m < len(head)]
                 matches = sum(same(tail[a], head[b], a == last) for a, b in pairs)
@@ -451,7 +474,7 @@ class TextReconciler:
         last = self.words[-1]
         # A lower-case continuation shows a window-edge full stop was not real.
         if new[0][:1].islower() and last.endswith(".") and not last.endswith("..") \
-                and len(self.words) > self.frozen:
+                and _norm(last) != _norm(new[0]) and len(self.words) > self.frozen:
             self.words[-1] = last[:-1]
         self.words = self.words + new
 
@@ -522,8 +545,17 @@ def encode_wav(audio, rate):
     """Mono 16 kHz PCM16 WAV bytes (resampled when the device rate differs)."""
     data = np.asarray(audio, dtype=np.float32).reshape(-1)
     if int(rate) != WIRE_RATE and data.size > 1:
-        length = max(1, int(round(data.size * WIRE_RATE / int(rate))))
-        data = np.interp(np.linspace(0, data.size - 1, length), np.arange(data.size), data)
+        source_rate = int(rate)
+        length = max(1, int(round(data.size * WIRE_RATE / source_rate)))
+        # Windowed-sinc low pass before decimation; bounded 129-tap FIR runs
+        # only on the request worker. No optional dependency or mic work.
+        if source_rate > WIRE_RATE:
+            taps = np.arange(-64, 65, dtype=np.float64)
+            cutoff = 0.45 * WIRE_RATE / source_rate
+            kernel = 2 * cutoff * np.sinc(2 * cutoff * taps) * np.kaiser(129, 8.6)
+            kernel /= kernel.sum()
+            data = np.convolve(np.pad(data, (64, 64), mode="edge"), kernel, mode="valid")
+        data = np.interp(np.arange(length) * source_rate / WIRE_RATE, np.arange(data.size), data)
     pcm = (np.clip(data, -1.0, 1.0) * 32767.0).astype("<i2")
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as handle:
@@ -544,7 +576,7 @@ def is_groq_endpoint(client):
     return parts.scheme == "https" and (host == "groq.com" or host.endswith(".groq.com"))
 
 
-def groq_transcribe(client, model, wav, *, language="", timeout=4.0):
+def groq_transcribe(client, model, wav, *, language="", timeout=4.0, dispatch=None):
     """One bounded Groq Whisper request; returns (result, headers or None)."""
     if model not in FREE_MODELS:
         raise PreviewUnavailable("unsupported preview model")
@@ -559,6 +591,14 @@ def groq_transcribe(client, model, wav, *, language="", timeout=4.0):
     }
     if language:
         kwargs["language"] = language
+    if dispatch is not None:
+        # No synchronous-SDK fallback: a preflight check cannot close the gap
+        # to HTTP, and holding the lifecycle lock over create blocks stop.
+        start = getattr(client, "start_preview_transport", None)
+        if not callable(start):
+            raise PreviewUnavailable("revocable nonblocking preview transport unavailable")
+        future = dispatch(start, **kwargs)
+        return future.result(timeout=timeout), None
     api = client.audio.transcriptions
     raw = getattr(api, "with_raw_response", None)
     if raw is not None and callable(getattr(raw, "create", None)):
@@ -619,6 +659,41 @@ def classify_error(exc):
 # Process-wide budget
 
 
+class DispatchScheduler:
+    """Linearize revocation and *nonblocking transport initiation*.
+
+    start must initiate the request before returning a Future, without waiting
+    for its response. An ordinary synchronous SDK create is NOT this contract.
+    Production clients without that primitive fail closed for preview only.
+    Never hold this lock during encoding, ledger I/O, callbacks or Future.result.
+    Epoch changes revoke even requests queued before a final that already ended.
+    """
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.epoch = 0
+        self.finals = 0
+
+    def revoke(self, session=None, final_delta=0, reason="stopped"):
+        with self.lock:
+            if session is not None and session._stopped.is_set():
+                return False
+            self.epoch += 1
+            self.finals += final_delta
+            if session is not None:
+                session._stop_reason = reason
+                session._stopped.set()
+                session._generation += 1
+            return True
+
+    def dispatch(self, session, epoch, start, **kwargs):
+        with self.lock:
+            if session._stopped.is_set() or self.finals or epoch != self.epoch:
+                raise PreviewUnavailable("dispatch revoked")
+            if session.settings.verification_deadline and time.time() >= session.settings.verification_deadline:
+                raise PreviewUnavailable("verification expired")
+            return start(**kwargs)
+
+
 class PreviewBudget:
     """Conservative, process-wide accounting of Groq requests and audio.
 
@@ -642,6 +717,7 @@ class PreviewBudget:
         self._disabled = ""
         self._preview_in_flight = None
         self._finals_in_flight = 0
+        self.scheduler = DispatchScheduler()
 
     def billed(self, seconds):
         return max(self.min_billed, float(seconds))
@@ -729,8 +805,8 @@ class PreviewBudget:
                 if strikes >= self.max_strikes:
                     self._disabled = "rate limited repeatedly"
                 else:
-                    wait = max(60.0, retry_after or 0.0) * (2 ** (strikes - 1))
-                    self._cooldown_until = max(self._cooldown_until, now + min(3600.0, wait))
+                    wait = max(60.0, parse_duration(retry_after) or 0.0) * (2 ** (strikes - 1))
+                    self._cooldown_until = max(self._cooldown_until, now + wait)
             elif outcome == "auth":
                 self._disabled = "authentication failed"
             elif outcome in ("timeout", "error"):
@@ -762,14 +838,16 @@ class PreviewBudget:
 
     @contextmanager
     def final_priority(self, seconds):
-        with self._lock:
-            self._finals_in_flight += 1
-            self._events.append((self.clock(), self.billed(seconds), "final"))
+        self.scheduler.revoke(final_delta=1)
         try:
+            with self._lock:
+                self._finals_in_flight += 1
+                self._events.append((self.clock(), self.billed(seconds), "final"))
             yield
         finally:
             with self._lock:
                 self._finals_in_flight -= 1
+            self.scheduler.revoke(final_delta=-1)
 
 
 _DEFAULT_BUDGET = PreviewBudget()
@@ -948,6 +1026,8 @@ class GroqChunkSession:
         self._log = log
         self._queue = queue.Queue(maxsize=max(1, int(settings.max_queue_chunks)))
         self._overflow_samples = 0
+        self._input_position = 0
+        self._consumed_position = 0
         # Guards core state only. Callbacks must never hold this lock;
         # consumers must reject an inactive/obsolete session at consumption.
         self._lock = threading.RLock()
@@ -995,7 +1075,9 @@ class GroqChunkSession:
         if self._stopped.is_set():
             return
         try:
-            self._queue.put_nowait(chunk)
+            position = self._input_position
+            self._input_position += len(chunk)
+            self._queue.put_nowait((position, chunk))
         except queue.Full:
             try:
                 self._overflow_samples += len(chunk)
@@ -1004,12 +1086,9 @@ class GroqChunkSession:
 
     def stop(self, reason="stopped"):
         """End previews now. An in-flight request is abandoned, not awaited."""
-        with self._lock:
-            if self._stopped.is_set():
-                return
-            self._stop_reason = reason
-            self._stopped.set()
-            self._generation += 1
+        # No core/ledger lock: VAD, encoding and response work may be slow.
+        if not self._core.budget.scheduler.revoke(session=self, reason=reason):
+            return
         self._core.say(f"preview stopped ({reason})")
 
     def cancel(self):
@@ -1048,16 +1127,19 @@ class GroqChunkSession:
                 with self._lock:
                     if self._stopped.is_set():
                         break
-                    lost, self._overflow_samples = self._overflow_samples, 0
-                    if lost:
-                        self._core.discontinuity(lost)
-                    for chunk in chunks:
+                    for position, chunk in chunks:
+                        lost = position - self._consumed_position
+                        if lost:
+                            self._core.discontinuity(lost)
                         self._core.feed(chunk)
+                        self._consumed_position = position + len(chunk)
                     busy = self._request_thread is not None and self._request_thread.is_alive()
+                    with self._core.budget.scheduler.lock:
+                        epoch = self._core.budget.scheduler.epoch
                     plan = None if busy else self._core.next_window(now)
                     if plan is not None:
                         self._request_thread = threading.Thread(
-                            target=self._request, args=plan,
+                            target=self._request, args=(*plan, epoch),
                             name="protocol7-preview-request", daemon=True,
                         )
                         self._request_thread.start()
@@ -1065,7 +1147,7 @@ class GroqChunkSession:
             self._core.say(f"preview worker error ({type(exc).__name__})")
             self.stop("error")
 
-    def _request(self, window, token):
+    def _request(self, window, token, epoch):
         outcome, result, headers, retry_after = "not_sent", None, None, None
         try:
             try:
@@ -1076,18 +1158,12 @@ class GroqChunkSession:
                 raise PreviewUnavailable("Groq client not ready")
             client, model = info
             wav = encode_wav(window.audio, window.rate)
-            # Revoke queued windows after encoding. This is dispatch
-            # admission, not a wire-level cancellation guarantee (see docs).
-            # Atomic dispatch admission shares the scheduler with final
-            # registration. Expensive encoding/client lookup happen before it.
-            with self._lock:
-                admitted = (not self._stopped.is_set() and self._core.budget.dispatch_allowed()
-                            and (not self.settings.verification_deadline
-                                 or time.time() < self.settings.verification_deadline))
-            if admitted:
+            if self._core.budget.dispatch_allowed():
                 result, headers = groq_transcribe(
                     client, model, wav, language=self.settings.language,
                     timeout=self.settings.request_timeout,
+                    dispatch=lambda start, **kw: self._core.budget.scheduler.dispatch(
+                        self, epoch, start, **kw),
                 )
                 outcome = "ok"
         except PreviewUnavailable:
