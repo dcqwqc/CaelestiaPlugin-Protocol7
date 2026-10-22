@@ -312,3 +312,62 @@ class TemporalAlignmentTests(unittest.TestCase):
                 token, _ = core.budget.try_begin_preview(2)
                 core.finish_request(window, token, 'ok', 0, result={'text': text, 'words': words})
             self.assertEqual(core.text, expected)
+
+
+class RetryAfterHTTPDateTests(unittest.TestCase):
+    """Actual RFC-7231 HTTP-date must not be replaced by a 60s fallback."""
+
+    def test_numeric_and_http_date_have_equivalent_7200_second_cooldown(self):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        import types
+        instant = datetime(2026, 10, 22, 12, 0, 0, tzinfo=timezone.utc)
+        epoch = instant.timestamp()
+        http_date = format_datetime(instant + timedelta(hours=2), usegmt=True)
+        for header in ('7200', http_date):
+            with self.subTest(header=header):
+                error = types.SimpleNamespace(status_code=429,
+                    response=types.SimpleNamespace(headers={'Retry-After': header}))
+                with mock.patch.object(st.time, 'time', return_value=epoch):
+                    kind, wait = st.classify_error(error)
+                self.assertEqual(kind, 'rate_limited')
+                self.assertAlmostEqual(wait, 7200.0, delta=1.0)
+                clock=[1000.0]
+                budget=st.PreviewBudget(clock=lambda:clock[0])
+                token, denied=budget.try_begin_preview(5)
+                self.assertIsNone(denied)
+                budget.end_preview(token, kind, retry_after=wait)
+                self.assertAlmostEqual(budget.cooldown_remaining(),7200.0,delta=1.0)
+
+    def test_http_date_durable_cooldown_survives_recreation(self):
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+        import types
+        instant=datetime(2026,10,22,12,0,0,tzinfo=timezone.utc)
+        wall=instant.timestamp()
+        future=format_datetime(instant+timedelta(hours=2),usegmt=True)
+        err=types.SimpleNamespace(status_code=429,
+            response=types.SimpleNamespace(headers={'Retry-After':future}))
+        with mock.patch.object(st.time,'time',return_value=wall):
+            outcome,wait=st.classify_error(err)
+        with tempfile.TemporaryDirectory(prefix='p7-http-date-',dir='/tmp') as directory:
+            path=str(Path(directory)/'ledger')
+            clock=[wall]
+            budget=DurablePreviewBudget(path,clock=lambda:clock[0])
+            budget.disabled_reason()  # seed the durable ledger
+            clock[0]+=86401  # conservative 24h warmup
+            token,denied=budget.try_begin_preview(6)
+            self.assertIsNone(denied)
+            budget.end_preview(token,outcome,retry_after=wait)
+            clock[0]+=1
+            restarted=DurablePreviewBudget(path,clock=lambda:clock[0])
+            self.assertGreaterEqual(restarted.cooldown_remaining(),7198)
+            self.assertEqual(restarted.try_begin_preview(6)[1],'disabled' if restarted.disabled_reason() else 'cooldown')
+
+    def test_malformed_and_past_http_dates(self):
+        from datetime import datetime,timedelta,timezone
+        from email.utils import format_datetime
+        old=format_datetime(datetime(2026,10,22,12,0,tzinfo=timezone.utc)-timedelta(hours=1),usegmt=True)
+        self.assertEqual(st.parse_retry_after(old,now=datetime(2026,10,22,12,0,tzinfo=timezone.utc).timestamp()),0)
+        self.assertIsNone(st.parse_retry_after('not-a-date'))
+        self.assertIsNone(st.parse_retry_after('Thu, 22 Oct 2026 12:00:00'))

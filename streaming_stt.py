@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import io
 import math
+from email.utils import parsedate_to_datetime
 import queue
 import re
 import threading
@@ -647,12 +648,34 @@ def parse_duration(value):
     return sum(float(n) * scale[u] for n, u in parts)
 
 
+def parse_retry_after(value, *, now=None):
+    """HTTP Retry-After: delta seconds OR RFC 7231 HTTP-date.
+
+    Never truncate a provider's future deadline to the generic 60-second
+    fallback. A malformed/missing value returns None (caller fails closed).
+    """
+    seconds = parse_duration(value)
+    if seconds is not None:
+        return seconds
+    if value is None:
+        return None
+    try:
+        stamp = parsedate_to_datetime(str(value).strip())
+        if stamp.tzinfo is None:
+            return None  # HTTP dates must have an explicit timezone.
+        deadline = stamp.timestamp()
+        remaining = deadline - (time.time() if now is None else float(now))
+        return max(0.0, remaining) if math.isfinite(remaining) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def classify_error(exc):
     """Map an SDK/transport exception to (kind, retry_after) without text."""
     response = getattr(exc, "response", None)
     status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
     if status == 429:
-        return "rate_limited", parse_duration(_header(getattr(response, "headers", None), "retry-after"))
+        return "rate_limited", parse_retry_after(_header(getattr(response, "headers", None), "retry-after"))
     if status in (401, 403):
         return "auth", None
     if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():

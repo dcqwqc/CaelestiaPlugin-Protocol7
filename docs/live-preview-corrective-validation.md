@@ -9,8 +9,9 @@ on `feature/live-transcription-20261021`, based on clean reviewed HEAD
 **Implementation candidate; release remains blocked pending independent PASS
 and external FREE-tier verification.** A production-selectable transport is
 now implemented and exercised offline with the installed SDK type and mocked
-TLS sockets. No provider requests, paid STT, device changes, deployment, push,
-merge or SUMI edits occurred. No independent reviewer PASS is claimed.
+TLS sockets. No provider requests or paid STT occurred during those isolated test runs.
+Subsequent deployment, Git push and SUMI records are tracked in their own
+transactions; no account Free-tier certification is claimed here.
 
 ## Round-one corrections
 
@@ -125,11 +126,19 @@ for the final reruns. Lead reruns are not independent acceptance review.
 
 ## Exact Git and delivery status
 
-Staging was attempted and failed:
-`fatal: Unable to create .../.git/index.lock: Read-only file system`.
-No files were staged and no commit was created. HEAD remains
-`d3b90a455992740fa23cf5133fa965285b7fcddc` on the existing branch.
-Seven scoped files contain the correction:
+The earlier `d3b90a4` correction was committed before the independently
+rejected review. The next Groq production-transport correction was committed
+and pushed as `ac59669bd611b6d30bfdac7c0af969659f6142fb` on the existing
+feature branch. An independent review of that revision rejected a remaining
+RFC 7231 HTTP-date `Retry-After` cooldown defect. This follow-up corrects
+that parser and adds bounded numeric/date-header and durable-restart tests.
+The authoritative current delivery SHA is the Git HEAD/remote feature-branch
+SHA and each per-device transaction receipt, not a hardcoded historical
+checkpoint in this document. Production previews remain disabled until
+provider Free plan/organization usage verification; synthetic tests do not
+establish real microphone performance.
+
+Relevant scoped implementation files include:
 
 - `streaming_stt.py`
 - `preview_quota.py`
@@ -139,6 +148,11 @@ Seven scoped files contain the correction:
 - `docs/live-transcription.md`
 - `docs/live-preview-corrective-validation.md`
 
-No production configuration or user home state was modified. Loom task-card
-tools were unavailable. The supervised pipeline still owns independent review
-and deployment; this report does not authorize enabling unverified previews.
+The original development/test runs did not modify production user settings,
+credentials or paid transcription state. A later separately authorized rollout
+installed the `ac59669` candidate on Mirai (previews OFF), preserving its
+previous release and rollback transaction. That installation is not proof that
+this newer follow-up commit has been installed. Tachibana remained unreachable
+at the latest documented check. Per-host release receipts and live IPC checks
+are authoritative for current device deployment, not this historical report.
+No verified Groq Free-tier eligibility or real microphone acceptance is claimed.
