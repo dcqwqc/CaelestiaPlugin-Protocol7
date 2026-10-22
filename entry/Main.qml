@@ -36,6 +36,10 @@ Scope {
             use_groq: settings.useGroq,
             groq_api_key: settings.groqApiKey,
             groq_model: settings.groqModel,
+            // Live preview reuses the Groq key/model above; it has no
+            // credential or model of its own.
+            streaming_stt_enabled: settings.streamingSttEnabled,
+            streaming_stt_provider: settings.streamingSttProvider,
             model_size: settings.modelSize,
             whisper_is_custom: settings.whisperIsCustom,
             custom_model: settings.customModel,
@@ -206,6 +210,8 @@ Scope {
         function onUseGroqChanged(): void { root.applySettings(true); }
         function onGroqApiKeyChanged(): void { root.applySettings(true); }
         function onGroqModelChanged(): void { root.applySettings(true); }
+        function onStreamingSttEnabledChanged(): void { root.applySettings(true); }
+        function onStreamingSttProviderChanged(): void { root.applySettings(true); }
         function onModelSizeChanged(): void { root.applySettings(true); }
         function onWhisperIsCustomChanged(): void { root.applySettings(true); }
         function onCustomModelChanged(): void { root.applySettings(true); }

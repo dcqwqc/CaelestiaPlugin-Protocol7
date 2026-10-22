@@ -12,6 +12,7 @@ import time
 
 from config import add_history
 from ghost_wave import Target
+from streaming_stt import final_priority
 
 
 @dataclass
@@ -27,6 +28,9 @@ class GhostJob:
     non_enter_epoch: int | None = None
     attempt: int = 0
     send_queued: bool = False
+    # Optional opt-in live preview session. Display-only: it is stopped
+    # before the final and its text never replaces full-recording STT.
+    stream: object = None
     created: float = field(default_factory=time.monotonic)
 
     def public(self):
@@ -149,16 +153,18 @@ class GhostJobs:
         ):
             hook.disarm()
 
-    def enqueue(self, audio, target=None, focus_epoch=None, non_enter_epoch=None):
+    def enqueue(self, audio, target=None, focus_epoch=None, non_enter_epoch=None, stream=None):
         with self.lock:
             busy = sum(j.status in ("queued", "processing") for j in self.jobs.values())
             job = GhostJob(
                 secrets.token_hex(6), target, audio,
                 focus_epoch=focus_epoch, non_enter_epoch=non_enter_epoch,
+                stream=stream,
             )
             if busy >= 4:
                 job.status = "error"
                 job.error = "Busy processing other recordings"
+                job.stream = None
             self.jobs[job.id] = job
             # Do not keep entire audio arrays indefinitely after completion.
             while len(self.jobs) > 16:
@@ -174,6 +180,8 @@ class GhostJobs:
         if job.status == "queued":
             self.executor.submit(self._run, job)
         else:
+            if stream is not None:
+                stream.cancel()
             self._archive_after(job.id, "error", self.error_visible_seconds)
         return job
 
@@ -187,21 +195,51 @@ class GhostJobs:
         self._publish()
         self._archive_after(job.id, "error", self.error_visible_seconds)
 
+    def _stop_stream(self, job):
+        """Detach and stop the job's live preview; never read its text."""
+        with self.lock:
+            stream, job.stream = job.stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                try:
+                    stream.cancel()
+                except Exception:
+                    pass
+
     def _run(self, job):
         with self.lock:
             if job.cancelled or job.status not in ("queued", "error"):
-                return
-            job.attempt += 1
-            attempt = job.attempt
-            job.status = "processing"
+                stale = job.stream
+                job.stream = None
+                runnable = False
+            else:
+                runnable = True
+                job.attempt += 1
+                attempt = job.attempt
+                job.status = "processing"
+        if not runnable:
+            if stale is not None:
+                stale.cancel()
+            return
         self._publish()
         timer = threading.Timer(self.job_timeout_seconds, self._expire, args=(job.id, attempt))
         timer.daemon = True
         timer.start()
         try:
-            if job.audio is None or len(job.audio) < 8000:
+            # Previews end before the final so they never compete with it.
+            # Preview text is never trusted: the complete original recording
+            # is always transcribed exactly once per attempt below.
+            self._stop_stream(job)
+            audio = job.audio
+            if audio is None or len(audio) < 8000:
                 raise ValueError("Recording was too short")
-            result = self.app.whisper_engine.transcribe(job.audio)
+            if job.cancelled:
+                # Never start a cloud request for work already dismissed.
+                return
+            with final_priority(len(audio) / 16000.0):
+                result = self.app.whisper_engine.transcribe(audio)
             if not result or not result.strip():
                 raise ValueError("No speech recognized")
             result = self.app.llm_rewriter.rewrite(result)
@@ -327,10 +365,16 @@ class GhostJobs:
             ]
             if not visible:
                 return False
+            streams = []
             for job in visible:
                 job.cancelled = True
                 job.status = "cancelled"
                 job.audio = None
+                if job.stream is not None:
+                    streams.append(job.stream)
+                    job.stream = None
+        for stream in streams:
+            stream.cancel()
         self._publish()
         self._persist()
         return True
@@ -383,6 +427,9 @@ class GhostJobs:
             job.cancelled = True
             job.status = "cancelled"
             job.audio = None
+            stream, job.stream = job.stream, None
+        if stream is not None:
+            stream.cancel()
         self._publish()
         self._persist()
         return {"ok": True, "cancelled": True}

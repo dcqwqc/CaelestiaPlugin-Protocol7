@@ -1,3 +1,5 @@
+from preview_publication import PreviewPublication
+
 import json
 import sys
 import threading
@@ -8,6 +10,7 @@ class NativeUIBridge:
     """Thread-safe Protocol-7 state publisher consumed by Caelestia QML."""
 
     def __init__(self, config, audio_recorder):
+        self._preview_publication = PreviewPublication()
         self.config = config
         self.audio_recorder = audio_recorder
         self._stop = threading.Event()
@@ -34,8 +37,8 @@ class NativeUIBridge:
             return dict(self._state)
 
     def _publish(self):
-        payload = json.dumps(self._snapshot(), separators=(",", ":"), ensure_ascii=False)
         with self._write_lock:
+            payload = json.dumps(self._snapshot(), separators=(",", ":"), ensure_ascii=False)
             try:
                 sys.stdout.write(f"P7STATE {payload}\n")
                 sys.stdout.flush()
@@ -69,16 +72,19 @@ class NativeUIBridge:
             self._publish()
 
     def show(self):
+        self._preview_publication.bind(None)
         with self._state_lock:
             self._state.update(visible=True, processing=False, level=0.0, liveText="")
         self._publish()
 
     def hide(self):
+        self._preview_publication.bind(None)
         with self._state_lock:
             self._state.update(visible=False, processing=False, level=0.0, liveText="")
         self._publish()
 
     def set_processing_state(self):
+        self._preview_publication.bind(None)
         with self._state_lock:
             self._state.update(visible=True, processing=True, level=0.0)
         self._publish()
@@ -87,6 +93,12 @@ class NativeUIBridge:
         with self._state_lock:
             self._state["jobs"] = list(jobs)
         self._publish()
+
+    def bind_preview_session(self, session):
+        self._preview_publication.bind(session)
+
+    def publish_preview(self, session, text):
+        self._preview_publication.consume(session, text, self.set_live_text)
 
     def set_live_text(self, text):
         with self._state_lock:

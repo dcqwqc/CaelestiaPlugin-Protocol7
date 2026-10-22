@@ -120,6 +120,10 @@ class Protocol7App:
         self.enter_interceptor = EnterInterceptor()
         self._ghost = GhostJobs(self)
         self._recording_target = None
+        # Opt-in, display-only live preview for the current recording only
+        # (None when disabled). It stops with the recording; the final always
+        # transcribes the complete audio.
+        self._stream_session = None
         self.control = ControlServer(self._handle_control_command)
         self.tabby_wake = WakeRuntime(
             self.config,
@@ -143,6 +147,58 @@ class Protocol7App:
             "ready": counts["ready"],
         }
 
+    def _start_stream_session(self):
+        """Attach an opt-in Groq preview session to the recording just started.
+
+        Disabled or misconfigured installations keep the unchanged batch
+        path; nothing here may fail the recording itself. Previews reuse the
+        final dictation's Groq client and model (no other credential).
+        """
+        self._stream_session = None
+        try:
+            import streaming_stt
+
+            reason = streaming_stt.availability(self.config)
+            if reason is not None:
+                if self.config.get("streaming_stt_enabled", False):
+                    log_debug(f"Live preview inactive: {reason}")
+                return
+            session = streaming_stt.create_session(
+                self.config,
+                input_rate=getattr(self.audio_recorder, "actual_sample_rate", 16000),
+                client_provider=getattr(self.whisper_engine, "groq_preview_client", None),
+                log=lambda message: log_debug(f"[LIVE_STT] {message}"),
+            )
+            if session is None:
+                return
+            session.set_partial_callback(
+                lambda text, live=session: self._on_stream_partial(live, text)
+            )
+            self._stream_session = session
+            binder = getattr(self.ui_manager, "bind_preview_session", None)
+            if binder is not None:
+                binder(session)
+            session.start()
+            self.audio_recorder.attach_stream_listener(session.push_audio)
+        except Exception as error:
+            log_debug(f"Live preview unavailable ({type(error).__name__})")
+            stale, self._stream_session = self._stream_session, None
+            if stale is not None:
+                self.audio_recorder.detach_stream_listener()
+                stale.cancel()
+
+    def _on_stream_partial(self, session, text):
+        # Display only while recording: partials are never pasted, saved to
+        # history or logged. Events from a finished session are ignored.
+        if not self.is_active or self._stream_session is not session or not session.active:
+            return
+        setter = getattr(self.ui_manager, "publish_preview", None)
+        if setter is not None:
+            try:
+                setter(session, text)
+            except Exception:
+                pass
+
     def _toggle_ghost(self, source):
         # No cloud work happens here. Another Double-Ctrl while the detached
         # wave is visible dismisses it instead of starting a new recording.
@@ -163,11 +219,18 @@ class Protocol7App:
                 self.is_active = True
                 self.ui_manager.show()
                 self._recording_target = capture_target(pointer_at_press)
+                # Chunks captured before this point are replayed on attach.
+                self._start_stream_session()
                 log_debug(f"Ghost recording started ({source})")
                 return self._dictation_status()
 
             self.is_active = False
+            stream, self._stream_session = self._stream_session, None
             audio = self.audio_recorder.stop_recording()
+            if stream is not None:
+                # Previews end with the recording (no request starts after
+                # this) and never feed the final, which uses `audio` in full.
+                stream.stop()
             target = self._recording_target
             self._recording_target = None
             # Publish the ghost before hiding the bottom recording chip:
@@ -176,12 +239,15 @@ class Protocol7App:
             if len(audio) < 8000:
                 # A quick accidental toggle must not leave a permanent Retry
                 # ghost floating beside the last application.
+                if stream is not None:
+                    stream.cancel()
                 self.ui_manager.hide()
                 log_debug("Ghost recording too short; closed without creating a job")
                 return self._dictation_status()
             job = self._ghost.enqueue(
                 audio, target, self.hotkey.focus_epoch(),
                 getattr(self.hotkey, "non_enter_focus_epoch", lambda: None)(),
+                stream=stream,
             )
             self.ui_manager.hide()
             if job is None:
@@ -609,6 +675,9 @@ class Protocol7App:
         except KeyboardInterrupt:
             log_debug("Exiting...")
         finally:
+            stream, self._stream_session = getattr(self, "_stream_session", None), None
+            if stream is not None:
+                stream.cancel()
             self.tabby_wake.stop()
             self.control.stop()
             self.hotkey.stop()

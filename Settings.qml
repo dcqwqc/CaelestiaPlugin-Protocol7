@@ -27,6 +27,27 @@ SettingsObject {
         options: ["whisper-large-v3-turbo", "whisper-large-v3"]
     }
 
+    // Live preview while speaking. Opt-in and display-only: the final
+    // always re-transcribes the complete recording with Groq once. Reuses
+    // the Groq key and model above (needs "Use Groq Cloud API"); there is no
+    // separate credential or paid provider.
+    property bool streamingSttEnabled: false
+    SettingMeta on streamingSttEnabled {
+        label: "Live preview (experimental)"
+        description: "Show Groq Whisper preview text every few seconds while speaking. Uses the Groq key above within a conservative free-tier budget. Off by default."
+        icon: "graphic_eq"
+        inputType: SettingMeta.Switch
+    }
+
+    property string streamingSttProvider: "groq-chunks"
+    SettingMeta on streamingSttProvider {
+        label: "Live preview provider"
+        description: "groq-chunks: overlapping ~6 s Groq Whisper windows. The only supported provider."
+        icon: "settings_input_antenna"
+        inputType: SettingMeta.SplitButton
+        options: ["groq-chunks"]
+    }
+
     // Local Whisper
     property bool whisperIsCustom: false
     property string customModel: ""

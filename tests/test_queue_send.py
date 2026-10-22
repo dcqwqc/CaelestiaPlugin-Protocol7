@@ -63,6 +63,7 @@ class QueueSendTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.app = App()
         self.manager = GhostJobs(self.app)
+        self.addCleanup(self.manager.executor.shutdown, wait=True)
         self.target = Target("0x123", "zen", "eDP-1", 200, 300)
 
     def test_enter_during_processing_waits_for_paste(self):

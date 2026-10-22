@@ -13,6 +13,11 @@ class WhisperEngine:
         self._lock = threading.Lock()
         self.groq_client = None
         self.current_groq_key = None
+        # Final accounting stays active independently of the preview switch.
+        path = config.get("streaming_stt_quota_ledger")
+        if isinstance(path, str) and path.startswith("/"):
+            from streaming_stt import configure_budget
+            configure_budget(path)
 
     def _load_local_model_locked(self):
         model_size = self.config.get("model_size", "tiny.en")
@@ -56,6 +61,22 @@ class WhisperEngine:
                     print("Groq transcription is enabled but no key is configured.")
                 return
             self._load_local_model_locked()
+
+    def groq_preview_client(self):
+        """Return (client, model) for opt-in live previews, else None.
+
+        Previews reuse exactly the Groq client and model already selected for
+        final dictation: no separate credential, provider or billing route.
+        This never creates a client, loads a model or falls back to local
+        Whisper; previews simply wait until final dictation set Groq up.
+        """
+        if not self.config.get("use_groq", False):
+            return None
+        key = str(self.config.get("groq_api_key") or "").strip()
+        client = self.groq_client
+        if not key or client is None or self.current_groq_key != key:
+            return None
+        return client, str(self.config.get("groq_model") or "whisper-large-v3-turbo")
 
     @staticmethod
     def _suspicious_numeric_hallucination(text, audio_data):
@@ -116,12 +137,19 @@ class WhisperEngine:
                 wav_io.seek(0)
                 
                 groq_model = self.config.get("groq_model", "whisper-large-v3-turbo")
-                transcription = self.groq_client.audio.transcriptions.create(
-                    file=("audio.wav", wav_io.read()),
-                    model=groq_model,
-                    response_format="json",
-                    temperature=0.0,
-                )
+                kwargs = dict(file=("audio.wav", wav_io.read()), model=groq_model,
+                              response_format="json", temperature=0.0)
+                api = self.groq_client.audio.transcriptions
+                raw = getattr(api, "with_raw_response", None)
+                from streaming_stt import final_priority
+                with final_priority(len(audio_data) / 16000.0):
+                    if raw is not None and callable(getattr(raw, "create", None)):
+                        response = raw.create(**kwargs)
+                        transcription = response.parse()
+                        from streaming_stt import observe_final_response
+                        observe_final_response(headers=getattr(response, "headers", None))
+                    else:
+                        transcription = api.create(**kwargs)
                 recognized_text = transcription.text.strip()
                 if self._suspicious_numeric_hallucination(recognized_text, audio_data):
                     # A quiet/no-speech capture can hallucinate digits. Do not
@@ -131,6 +159,8 @@ class WhisperEngine:
                 print(f"[Groq Whisper] Internal Transcription took {time.time() - t0:.2f}s")
                 return recognized_text
             except Exception as e:
+                from streaming_stt import observe_final_response
+                observe_final_response(error=e)
                 print(f"Groq transcription failed ({type(e).__name__}); no local substitution.")
                 return ""
         
