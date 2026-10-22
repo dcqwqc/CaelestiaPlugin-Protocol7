@@ -120,8 +120,9 @@ class Protocol7App:
         self.enter_interceptor = EnterInterceptor()
         self._ghost = GhostJobs(self)
         self._recording_target = None
-        # Opt-in live recognition for the current recording only (None when
-        # disabled). Ownership passes to its ghost job on stop.
+        # Opt-in, display-only live preview for the current recording only
+        # (None when disabled). It stops with the recording; the final always
+        # transcribes the complete audio.
         self._stream_session = None
         self.control = ControlServer(self._handle_control_command)
         self.tabby_wake = WakeRuntime(
@@ -147,10 +148,11 @@ class Protocol7App:
         }
 
     def _start_stream_session(self):
-        """Attach an opt-in live session to the recording just started.
+        """Attach an opt-in Groq preview session to the recording just started.
 
-        Disabled, misconfigured or dependency-less installations keep the
-        unchanged batch path; nothing here may fail the recording itself.
+        Disabled or misconfigured installations keep the unchanged batch
+        path; nothing here may fail the recording itself. Previews reuse the
+        final dictation's Groq client and model (no other credential).
         """
         self._stream_session = None
         try:
@@ -159,11 +161,12 @@ class Protocol7App:
             reason = streaming_stt.availability(self.config)
             if reason is not None:
                 if self.config.get("streaming_stt_enabled", False):
-                    log_debug(f"Live transcription inactive: {reason}")
+                    log_debug(f"Live preview inactive: {reason}")
                 return
             session = streaming_stt.create_session(
                 self.config,
                 input_rate=getattr(self.audio_recorder, "actual_sample_rate", 16000),
+                client_provider=getattr(self.whisper_engine, "groq_preview_client", None),
                 log=lambda message: log_debug(f"[LIVE_STT] {message}"),
             )
             if session is None:
@@ -175,7 +178,7 @@ class Protocol7App:
             session.start()
             self.audio_recorder.attach_stream_listener(session.push_audio)
         except Exception as error:
-            log_debug(f"Live transcription unavailable ({type(error).__name__})")
+            log_debug(f"Live preview unavailable ({type(error).__name__})")
             stale, self._stream_session = self._stream_session, None
             if stale is not None:
                 self.audio_recorder.detach_stream_listener()
@@ -221,6 +224,10 @@ class Protocol7App:
             self.is_active = False
             stream, self._stream_session = self._stream_session, None
             audio = self.audio_recorder.stop_recording()
+            if stream is not None:
+                # Previews end with the recording (no request starts after
+                # this) and never feed the final, which uses `audio` in full.
+                stream.stop()
             target = self._recording_target
             self._recording_target = None
             # Publish the ghost before hiding the bottom recording chip:

@@ -12,6 +12,7 @@ import time
 
 from config import add_history
 from ghost_wave import Target
+from streaming_stt import final_priority
 
 
 @dataclass
@@ -27,8 +28,8 @@ class GhostJob:
     non_enter_epoch: int | None = None
     attempt: int = 0
     send_queued: bool = False
-    # Optional opt-in live session. Its verified final replaces the batch
-    # request; anything else falls back to the retained full recording.
+    # Optional opt-in live preview session. Display-only: it is stopped
+    # before the final and its text never replaces full-recording STT.
     stream: object = None
     created: float = field(default_factory=time.monotonic)
 
@@ -194,40 +195,18 @@ class GhostJobs:
         self._publish()
         self._archive_after(job.id, "error", self.error_visible_seconds)
 
-    def _take_stream(self, job):
+    def _stop_stream(self, job):
+        """Detach and stop the job's live preview; never read its text."""
         with self.lock:
             stream, job.stream = job.stream, None
-        return stream
-
-    def _verified_stream_text(self, job):
-        """Return a verified live transcript, or None to use batch STT.
-
-        The stream stays attached to the job while finalizing so that cancel
-        and Double-Control dismissal can abort it promptly.
-        """
-        with self.lock:
-            stream = job.stream
-        if stream is None:
-            return None
-        try:
-            outcome = stream.finish()
-        except Exception:
-            stream.cancel()
-            return None
-        finally:
-            with self.lock:
-                job.stream = None
-        text = (outcome.text or "").strip() if outcome.verified else ""
-        if not text:
-            return None
-        # Keep the existing guard against digit-only non-speech output.
-        guard = getattr(self.app.whisper_engine, "_suspicious_numeric_hallucination", None)
-        try:
-            if guard is not None and guard(text, job.audio):
-                return None
-        except Exception:
-            pass
-        return text
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                try:
+                    stream.cancel()
+                except Exception:
+                    pass
 
     def _run(self, job):
         with self.lock:
@@ -249,18 +228,18 @@ class GhostJobs:
         timer.daemon = True
         timer.start()
         try:
-            if job.audio is None or len(job.audio) < 8000:
-                stream = self._take_stream(job)
-                if stream is not None:
-                    stream.cancel()
+            # Previews end before the final so they never compete with it.
+            # Preview text is never trusted: the complete original recording
+            # is always transcribed exactly once per attempt below.
+            self._stop_stream(job)
+            audio = job.audio
+            if audio is None or len(audio) < 8000:
                 raise ValueError("Recording was too short")
-            result = self._verified_stream_text(job)
-            if result is None:
-                if job.cancelled:
-                    # Never start a (possibly paid) batch request for work
-                    # the user already dismissed.
-                    return
-                result = self.app.whisper_engine.transcribe(job.audio)
+            if job.cancelled:
+                # Never start a cloud request for work already dismissed.
+                return
+            with final_priority(len(audio) / 16000.0):
+                result = self.app.whisper_engine.transcribe(audio)
             if not result or not result.strip():
                 raise ValueError("No speech recognized")
             result = self.app.llm_rewriter.rewrite(result)

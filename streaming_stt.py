@@ -1,579 +1,1027 @@
-"""Opt-in incremental speech recognition while the user is speaking.
+"""Opt-in, display-only live preview from overlapping Groq Whisper windows.
 
-Groq Whisper on the complete recording stays the default and the fallback.
-A live session exists only when the user explicitly enabled it, selected a
-provider, supplied a key and separately authorized billing in config.json;
-the optional websocket-client package must also be installed. A completed
-file uploaded with ``stream=true`` is *not* live recognition and is never
-treated as such here.
+Provider ``groq-chunks`` periodically sends the most recent ~6 s of speech
+(1 s overlapping the previous window) to the Groq Whisper client and model
+already selected for final dictation. There is no separate credential,
+provider account or billing route, and no other provider exists here.
 
-One I/O thread owns the transport. The PortAudio callback only enqueues
-chunks, so a slow or failed connection can never stall capture. A final
-transcript is returned as verified only when every captured chunk was sent on
-one uninterrupted connection, the final commit was acknowledged and every
-committed item completed; otherwise the caller transcribes the full recording
-in batch. API keys and transcript text are never logged.
+Preview text is never trusted as the result: on stop the ghost job always
+transcribes the complete original recording once, and a failed, throttled or
+disabled preview can never prevent or delay that final request.
+
+Threading: the PortAudio callback only ``put_nowait``s chunks. One worker
+thread per recording drains them, runs voice-activity detection and plans
+windows; at most one preview request is in flight process-wide, on its own
+short-lived thread with a bounded timeout. Memory per recording is bounded
+by the ring buffer (window + 1 s) and the speech-interval list.
+
+Budgeting: Groq's free tier for Whisper allows 20 requests/min, 2000/day,
+7200 audio-seconds/hour and 28800/day per organization, shared with the
+final dictation and any other device using the same key. Previews may use
+only a fraction of that (counting the 10 s minimum billed length per
+request), yield while any final is in flight, cool down on 429 using
+``retry-after`` and stop for the recording on the first 429. API keys and
+transcript text are never logged.
 """
 from __future__ import annotations
 
-import base64
-import importlib.util
-import json
+import io
+import math
 import queue
+import re
 import threading
 import time
+import wave
+from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 import numpy as np
 
-PROVIDER_OPENAI_REALTIME = "openai-realtime"
-DEFAULT_MODEL = "gpt-live-transcribe"
-DEFAULT_URL = "wss://api.openai.com/v1/realtime?intent=transcription"
-WIRE_RATE = 24000
-COMMIT_EVENT_ID = "protocol7_final_commit"
+PROVIDER_GROQ_CHUNKS = "groq-chunks"
+WIRE_RATE = 16000
+DEFAULT_GROQ_MODEL = "whisper-large-v3-turbo"
 
-EVENT_COMMITTED = "input_audio_buffer.committed"
-EVENT_DELTA = "conversation.item.input_audio_transcription.delta"
-EVENT_COMPLETED = "conversation.item.input_audio_transcription.completed"
-EVENT_FAILED = "conversation.item.input_audio_transcription.failed"
-ERROR_COMMIT_EMPTY = "input_audio_buffer_commit_empty"
+# Groq free-tier limits for whisper-large-v3 / -turbo (per organization).
+FREE_TIER_LIMITS = {
+    "requests_per_minute": 20,
+    "requests_per_day": 2000,
+    "audio_seconds_per_hour": 7200,
+    "audio_seconds_per_day": 28800,
+}
+# Groq bills (and, conservatively, we assume rate-limits) each request as at
+# least 10 s of audio, so a 6 s preview window costs 10 s of budget.
+MIN_BILLED_SECONDS = 10.0
+
+# Budget denials that cannot clear during one recording.
+PERMANENT_DENIALS = frozenset({"disabled", "hourly audio", "daily audio", "daily requests"})
 
 
-class StreamingUnavailable(RuntimeError):
-    """The optional live transport cannot be used on this installation."""
-
-
-class TransportClosed(RuntimeError):
-    """The live connection failed or was closed."""
+class PreviewUnavailable(RuntimeError):
+    """No usable Groq client right now; nothing was sent."""
 
 
 @dataclass(frozen=True)
-class StreamingSettings:
-    api_key: str = field(default="", repr=False)
-    model: str = DEFAULT_MODEL
+class PreviewSettings:
     language: str = ""
-    url: str = DEFAULT_URL
-    connect_timeout: float = 5.0
-    finalize_timeout: float = 8.0
-    # Quiet period after the last commit event before the final transcript is
-    # declared complete; covers a server-VAD commit racing our own commit.
-    settle_seconds: float = 0.3
-    max_reconnects: int = 1
-    reconnect_delay: float = 0.25
-    max_queue_chunks: int = 8192
+    interval_seconds: float = 5.0
+    overlap_seconds: float = 1.0
+    first_preview_seconds: float = 4.0
+    min_window_speech_seconds: float = 0.6
+    min_new_speech_seconds: float = 0.5
+    request_timeout: float = 4.0
+    max_failures: int = 2
+    idle_timeout: float = 3.0
+    max_session_seconds: float = 900.0
+    max_requests: int = 120
+    max_queue_chunks: int = 1024
+
+    @property
+    def window_seconds(self):
+        return self.interval_seconds + self.overlap_seconds
 
 
-@dataclass(frozen=True)
-class StreamingResult:
-    verified: bool
-    text: str = field(default="", repr=False)
-    reason: str = ""
-
-
-def _websocket_installed(find_spec=None):
-    finder = find_spec or importlib.util.find_spec
+def _clamp(value, low, high, default):
     try:
-        return finder("websocket") is not None
-    except (ImportError, ValueError):
-        return False
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return min(high, max(low, number))
 
 
-def availability(config, *, require_dependency=True, find_spec=None):
-    """Return None when live recognition may run, else a non-secret reason."""
+def availability(config):
+    """Return None when previews may run, else a short non-secret reason."""
     if config.get("streaming_stt_enabled", False) is not True:
         return "disabled"
     provider = str(config.get("streaming_stt_provider") or "").strip()
     if not provider:
         return "no provider configured"
-    if provider != PROVIDER_OPENAI_REALTIME:
+    if provider != PROVIDER_GROQ_CHUNKS:
         return "unsupported provider"
-    if not str(config.get("streaming_stt_api_key") or "").strip():
-        return "no API key configured"
-    if config.get("streaming_stt_billing_authorized", False) is not True:
-        return "billing not authorized"
-    if require_dependency and not _websocket_installed(find_spec):
-        return "websocket-client not installed"
+    if config.get("use_groq", False) is not True:
+        return "Groq dictation not enabled"
+    if not str(config.get("groq_api_key") or "").strip():
+        return "no Groq API key configured"
+    reason = default_budget().disabled_reason()
+    if reason:
+        return f"preview disabled ({reason})"
     return None
 
 
 def settings_from_config(config):
-    try:
-        finalize = float(config.get("streaming_stt_finalize_timeout_seconds", 8.0))
-    except (TypeError, ValueError):
-        finalize = 8.0
     language = ""
     if not config.get("auto_detect_language", True):
         language = str(config.get("language") or "").strip()
-    return StreamingSettings(
-        api_key=str(config.get("streaming_stt_api_key") or "").strip(),
-        model=str(config.get("streaming_stt_model") or "").strip() or DEFAULT_MODEL,
+    return PreviewSettings(
         language=language,
-        finalize_timeout=min(30.0, max(1.0, finalize)),
+        interval_seconds=_clamp(config.get("streaming_stt_preview_interval_seconds", 5.0), 4.0, 6.0, 5.0),
     )
 
 
-def create_session(config, *, input_rate=16000, on_partial=None, log=None,
-                   transport_factory=None, find_spec=None):
-    """Build an unstarted session, or None when streaming is not opted in."""
-    reason = availability(config, require_dependency=transport_factory is None,
-                          find_spec=find_spec)
-    if reason is not None:
+def create_session(config, *, input_rate=16000, client_provider=None, on_partial=None,
+                   log=None, budget=None):
+    """Build an unstarted session, or None when previews are not opted in."""
+    if availability(config) is not None or client_provider is None:
         return None
-    return StreamingSession(
+    return GroqChunkSession(
         settings_from_config(config), input_rate=input_rate,
-        transport_factory=transport_factory, on_partial=on_partial, log=log,
+        client_provider=client_provider, budget=budget, on_partial=on_partial, log=log,
     )
 
 
-class WebsocketTransport:
-    """websocket-client transport, imported lazily so it stays optional."""
-
-    def __init__(self, settings):
-        try:
-            import websocket
-        except ImportError:
-            raise StreamingUnavailable("websocket-client is not installed") from None
-        if not hasattr(websocket, "create_connection"):
-            raise StreamingUnavailable("incompatible websocket module")
-        self._timeouts = (getattr(websocket, "WebSocketTimeoutException", TimeoutError), TimeoutError)
-        try:
-            self._ws = websocket.create_connection(
-                settings.url,
-                header=[f"Authorization: Bearer {settings.api_key}"],
-                timeout=settings.connect_timeout,
-                enable_multithread=True,
-            )
-        except Exception as exc:
-            # Exception text may echo request details; keep only its type.
-            raise TransportClosed(f"connect failed ({type(exc).__name__})") from None
-
-    def send(self, text):
-        try:
-            self._ws.send(text)
-        except Exception as exc:
-            raise TransportClosed(f"send failed ({type(exc).__name__})") from None
-
-    def recv(self, timeout):
-        try:
-            self._ws.settimeout(timeout)
-            data = self._ws.recv()
-        except self._timeouts:
-            return None
-        except Exception as exc:
-            raise TransportClosed(f"receive failed ({type(exc).__name__})") from None
-        if not data:
-            raise TransportClosed("connection closed")
-        return data
-
-    def close(self):
-        try:
-            self._ws.close()
-        except Exception:
-            pass
+# --------------------------------------------------------------------------
+# Voice activity
 
 
-def default_transport_factory(settings):
-    return WebsocketTransport(settings)
+class SpeechDetector:
+    """Deterministic energy/zero-crossing voice detector.
+
+    A 30 ms frame is speech-like when it is above an absolute level, well
+    above an adaptive noise floor and not noise-like (high zero-crossing
+    rate). Only dense runs of >= ~210 ms count as speech, which rejects
+    clicks, key taps and brief bumps; confirmed runs bridge 200 ms pauses.
+    """
+
+    def __init__(self, rate, *, frame_seconds=0.03, abs_threshold_db=-48.0, margin_db=12.0,
+                 max_zcr=0.4, min_run_seconds=0.21, hangover_seconds=0.2,
+                 floor_rise_db_per_second=1.0):
+        self.rate = int(rate)
+        self.frame = max(1, int(round(self.rate * frame_seconds)))
+        self.abs_threshold_db = abs_threshold_db
+        self.margin_db = margin_db
+        self.max_zcr = max_zcr
+        self.min_run = max(1, int(math.ceil(min_run_seconds / frame_seconds - 1e-9)))
+        self.hangover = max(0, int(round(hangover_seconds / frame_seconds)))
+        self.pre_gap = 3  # frames bridged before a run is confirmed (~90 ms)
+        self.floor_rise = floor_rise_db_per_second * frame_seconds
+        self.floor_db = None
+        self.position = 0  # absolute sample index of the next unprocessed frame
+        self.intervals = deque()  # confirmed [start, end) absolute sample spans
+        self._carry = np.zeros(0, dtype=np.float32)
+        self._run_start = None
+        self._run_frames = 0
+        self._gap = 0
+        self._confirmed = False
+
+    def process(self, audio):
+        data = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if self._carry.size:
+            data = np.concatenate([self._carry, data])
+        count = data.size // self.frame
+        if count:
+            frames = data[:count * self.frame].reshape(count, self.frame)
+            rms = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1))
+            levels = 20.0 * np.log10(np.maximum(rms, 1e-9))
+            signs = np.signbit(frames)
+            zcr = np.mean(signs[:, 1:] != signs[:, :-1], axis=1)
+            for level, crossing in zip(levels.tolist(), zcr.tolist()):
+                self._frame(level, crossing)
+        self._carry = data[count * self.frame:].copy()
+
+    def _frame(self, level, crossing):
+        start = self.position
+        self.position += self.frame
+        floor = level if self.floor_db is None else self.floor_db
+        speech = (level >= self.abs_threshold_db and level >= floor + self.margin_db
+                  and crossing <= self.max_zcr)
+        # Minimum tracking: falls immediately, rises slowly through speech.
+        self.floor_db = max(-100.0, level if level < floor else min(level, floor + self.floor_rise))
+        if speech:
+            if self._run_start is None:
+                self._run_start, self._run_frames = start, 0
+            self._run_frames += 1
+            self._gap = 0
+            if self._confirmed:
+                self.intervals[-1][1] = self.position
+            else:
+                span = (self.position - self._run_start) // self.frame
+                # Dense, sustained energy only: periodic key taps or clicks
+                # bridged by short gaps never confirm a speech run.
+                if self._run_frames >= self.min_run and self._run_frames >= 0.6 * span:
+                    self._confirmed = True
+                    self.intervals.append([self._run_start, self.position])
+        elif self._run_start is not None:
+            self._gap += 1
+            if self._gap > (self.hangover if self._confirmed else self.pre_gap):
+                self.reset_run()
+
+    def reset_run(self):
+        self._run_start, self._run_frames, self._gap, self._confirmed = None, 0, 0, False
+
+    def skip(self, samples):
+        """Account for samples that were lost before reaching the detector."""
+        self._carry = np.zeros(0, dtype=np.float32)
+        self.position += int(samples)
+        self.reset_run()
+
+    def speech_samples(self, start, end):
+        total = 0
+        for span_start, span_end in self.intervals:
+            total += max(0, min(end, span_end) - max(start, span_start))
+        return total
+
+    def prune(self, before):
+        while self.intervals and self.intervals[0][1] <= before and not (
+                self._confirmed and len(self.intervals) == 1):
+            self.intervals.popleft()
 
 
-class TranscriptState:
-    """Live items keyed by provider item ID, kept in conversation order."""
+# --------------------------------------------------------------------------
+# Window planning
 
-    def __init__(self):
-        self.order = []
-        self.previous = {}
-        self.deltas = {}
-        self.finals = {}
-        self.failed = set()
-        # Slot for a new connection's first item (previous_item_id null).
-        self.base = 0
 
-    def _known(self, item_id):
-        if item_id not in self.deltas:
-            self.deltas[item_id] = ""
-            self.order.append(item_id)
+@dataclass(frozen=True)
+class Window:
+    index: int
+    start: int
+    end: int
+    rate: int
+    audio: np.ndarray = field(repr=False, compare=False)
+    overlap: bool = False
+    gap: bool = False
+    speech_seconds: float = 0.0
 
-    def _place(self, item_id, placed):
-        if item_id in placed:
+    @property
+    def duration(self):
+        return (self.end - self.start) / self.rate
+
+
+class WindowPlanner:
+    """Bounded ring buffer that proposes overlapping, voiced preview windows."""
+
+    def __init__(self, settings, rate):
+        self.rate = int(rate)
+        seconds = lambda value: int(round(value * self.rate))
+        self.window = seconds(settings.window_seconds)
+        self.overlap = seconds(settings.overlap_seconds)
+        self.interval = seconds(settings.interval_seconds)
+        self.first = seconds(settings.first_preview_seconds)
+        self.min_window_speech = seconds(settings.min_window_speech_seconds)
+        self.min_new_speech = seconds(settings.min_new_speech_seconds)
+        self.min_gap_speech = seconds(0.2)
+        self.capacity = self.window + self.rate
+        self.detector = SpeechDetector(self.rate)
+        self.total = 0           # absolute samples received for this recording
+        self.sent_end = 0        # end of the last window actually sent
+        self.considered_end = 0  # audio before this was sent or judged silent
+        self.windows = 0
+        self._chunks = deque()
+        self._buffered = 0
+        self._buffer_start = 0
+        self._lost_since_sent = False
+
+    def add(self, chunk):
+        data = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        if not data.size:
             return
-        placed.add(item_id)
-        previous = self.previous[item_id]
-        self.order.remove(item_id)
-        if previous is None:
-            self.order.insert(min(self.base, len(self.order)), item_id)
-        elif previous in self.order:
-            self.order.insert(self.order.index(previous) + 1, item_id)
-        else:
-            self.order.append(item_id)
-        # Items committed earlier that named this one as their predecessor.
-        for other, before in list(self.previous.items()):
-            if before == item_id:
-                self._place(other, placed)
+        self._chunks.append(data)
+        self._buffered += data.size
+        self.total += data.size
+        self.detector.process(data)
+        while self._chunks and self._buffered - self._chunks[0].size >= self.capacity:
+            old = self._chunks.popleft()
+            self._buffered -= old.size
+            self._buffer_start += old.size
+        self.detector.prune(self._buffer_start - self.window)
 
-    def commit(self, item_id, previous_id, has_previous):
-        self._known(item_id)
-        if has_previous:
-            self.previous[item_id] = previous_id if isinstance(previous_id, str) and previous_id else None
-            self._place(item_id, set())
+    def discontinuity(self, lost_samples=0):
+        """Audio was dropped: never stitch a window across the hole."""
+        self.detector.skip(lost_samples)
+        self.total += int(lost_samples)
+        self._chunks.clear()
+        self._buffered = 0
+        self._buffer_start = self.total
+        self.considered_end = max(self.considered_end, self.total)
+        self._lost_since_sent = True
 
-    def delta(self, item_id, text):
-        self._known(item_id)
-        if item_id not in self.finals:
-            self.deltas[item_id] += text
+    def buffered_samples(self):
+        return self._buffered
 
-    def complete(self, item_id, transcript):
-        self._known(item_id)
-        self.finals[item_id] = transcript
+    def propose(self):
+        """Return (window, None) for a window worth sending, else (None, reason).
 
-    def fail(self, item_id):
-        self._known(item_id)
-        self.failed.add(item_id)
+        Silent stretches are consumed here so that the same unvoiced audio is
+        never reconsidered; a window always contains new voiced samples.
+        """
+        needed = self.first if self.windows == 0 else self.interval
+        end = self.total
+        if end - self.considered_end < needed:
+            return None, "waiting"
+        start = max(self._buffer_start, end - self.window, 0)
+        new_speech = self.detector.speech_samples(self.considered_end, end)
+        window_speech = self.detector.speech_samples(start, end)
+        if new_speech < self.min_new_speech or window_speech < self.min_window_speech:
+            self.considered_end = end
+            return None, "silence"
+        overlap = self.windows > 0 and start < self.sent_end and not self._lost_since_sent
+        skipped = self.detector.speech_samples(self.sent_end, start) if self.windows else 0
+        gap = self.windows > 0 and (self._lost_since_sent or skipped >= self.min_gap_speech)
+        audio = np.concatenate(list(self._chunks))[start - self._buffer_start:end - self._buffer_start]
+        return Window(self.windows + 1, start, end, self.rate, audio.copy(), overlap, gap,
+                      window_speech / self.rate), None
 
-    def pending(self):
-        return sum(1 for i in self.order if i not in self.finals and i not in self.failed)
+    def commit(self, window, *, delivered=True):
+        """Mark a window as sent; undelivered text forces a gap marker next."""
+        self.windows = max(self.windows, window.index)
+        self.sent_end = window.end
+        self.considered_end = max(self.considered_end, window.end)
+        self._lost_since_sent = not delivered
 
+
+# --------------------------------------------------------------------------
+# Text reconciliation
+
+
+def _norm(word):
+    return re.sub(r"[^\w']+", "", word.lower()).strip("'")
+
+
+class TextReconciler:
+    """Merge overlapping window transcripts into one stable preview line.
+
+    Only the last ``max_revise_words`` words may ever change; everything
+    before is frozen so displayed text never blinks. Overlapping windows are
+    aligned on their shared words (the newer window's wording wins inside the
+    overlap, fixing boundary punctuation and cut-off words); windows separated
+    by unsent speech are joined with an ellipsis instead of being merged.
+    """
+
+    GAP = "…"
+
+    def __init__(self, *, max_revise_words=8, max_words=300, search_words=10, max_head_skip=4):
+        self.words = []
+        self.frozen = 0
+        self.max_revise = max_revise_words
+        self.max_words = max_words
+        self.search = search_words
+        self.max_head_skip = max_head_skip
+
+    @property
     def text(self):
-        parts = []
-        for item_id in self.order:
-            if item_id in self.failed:
+        return " ".join(self.words)
+
+    def add(self, text, *, overlap=False, gap=False):
+        new = str(text or "").split()
+        if not new:
+            return False
+        before = list(self.words)
+        if not self.words:
+            self.words = new
+        elif gap:
+            self.words = self.words + ([] if self.words[-1] == self.GAP else [self.GAP]) + new
+        elif overlap:
+            self._merge(new)
+        else:
+            self._append(new)
+        self.frozen = max(self.frozen, len(self.words) - self.max_revise)
+        if len(self.words) > self.max_words:
+            drop = len(self.words) - self.max_words + 1
+            self.words = [self.GAP] + self.words[drop:]
+            self.frozen = max(1, self.frozen - drop + 1)
+        return self.words != before
+
+    def _merge(self, new):
+        prev = self.words
+        low = max(self.frozen, len(prev) - self.search)
+        tail = [_norm(w) for w in prev[low:]]
+        head = [_norm(w) for w in new[:self.search]]
+        last = len(tail) - 1
+
+        def same(a, b, cut):
+            # The previous window's final word may have been cut off mid-word.
+            if not a or not b:
+                return False
+            return a == b or (cut and min(len(a), len(b)) >= 3 and (a.startswith(b) or b.startswith(a)))
+
+        # Align a suffix of the previous text with the start of the new
+        # window position by position, so one misrecognized word inside the
+        # overlap does not break the match. The first aligned word must agree.
+        best = None
+        for i in range(len(tail)):
+            for j in range(min(len(head), self.max_head_skip + 1)):
+                if not same(tail[i], head[j], i == last):
+                    continue
+                pairs = [(i + m, j + m) for m in range(len(tail) - i) if j + m < len(head)]
+                matches = sum(same(tail[a], head[b], a == last) for a, b in pairs)
+                single = matches == 1 and len(tail[i]) >= 3 and len(tail) - i <= 2 and j <= 1
+                if not (single or (matches >= 2 and 2 * matches >= len(pairs))):
+                    continue
+                key = (matches, matches - len(pairs), -j, i)
+                if best is None or key > best[0]:
+                    best = (key, i, j)
+        if best is None:
+            self._append(new)
+            return
+        _, i, j = best
+        self.words = prev[:low + i] + new[j:]
+
+    def _append(self, new):
+        if self.words and _norm(new[0]) and _norm(new[0]) == _norm(self.words[-1]):
+            new = new[1:]
+        if not new:
+            return
+        last = self.words[-1]
+        # A lower-case continuation shows a window-edge full stop was not real.
+        if new[0][:1].islower() and last.endswith(".") and not last.endswith("..") \
+                and len(self.words) > self.frozen:
+            self.words[-1] = last[:-1]
+        self.words = self.words + new
+
+
+# --------------------------------------------------------------------------
+# Response filtering
+
+_HALLUCINATIONS = frozenset({
+    "you", "thank you", "thanks", "thank you so much", "thank you very much",
+    "thanks for watching", "thank you for watching", "thanks for listening",
+    "please subscribe", "like and subscribe", "bye", "bye bye", "goodbye", "okay",
+    "subtitles by the amaraorg community", "amaraorg", "music", "applause",
+    "silence", "uh", "um", "hmm", "so", "the end",
+})
+
+
+def _field(obj, name):
+    if isinstance(obj, dict):
+        return obj.get(name)
+    value = getattr(obj, name, None)
+    if value is None:
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict):
+            value = extra.get(name)
+    return value
+
+
+def _number(value, default):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    return number if math.isfinite(number) else default
+
+
+def clean_preview_text(result):
+    """Return displayable preview text, or "" for likely non-speech output."""
+    segments = _field(result, "segments")
+    if isinstance(segments, (list, tuple)) and segments:
+        kept = []
+        for segment in segments:
+            no_speech = _number(_field(segment, "no_speech_prob"), 0.0)
+            logprob = _number(_field(segment, "avg_logprob"), 0.0)
+            ratio = _number(_field(segment, "compression_ratio"), 1.0)
+            if no_speech > 0.85 or (no_speech > 0.6 and logprob < -0.7) or ratio > 2.4:
                 continue
-            words = self.finals.get(item_id, self.deltas.get(item_id, "")).split()
-            if words:
-                parts.append(" ".join(words))
-        return " ".join(parts)
+            kept.append(str(_field(segment, "text") or ""))
+        text = " ".join(kept)
+    else:
+        text = str(_field(result, "text") or "")
+    text = " ".join(text.split())
+    if not re.search(r"[^\W\d_]", text):
+        return ""  # punctuation, digits or nothing: never preview as speech
+    normalized = " ".join(re.sub(r"[^\w\s]", "", text.lower()).split())
+    if normalized in _HALLUCINATIONS:
+        return ""
+    words = normalized.split()
+    if len(words) >= 4 and max(words.count(w) for w in set(words)) / len(words) > 0.6:
+        return ""  # "the the the the" style decoder loops
+    return text
 
-    def drop_incomplete(self):
-        """Forget items that a lost connection can never finish."""
-        self.order = [i for i in self.order if i in self.finals]
-        keep = set(self.order)
-        self.deltas = {i: t for i, t in self.deltas.items() if i in keep}
-        self.previous = {i: p for i, p in self.previous.items() if i in keep}
-        self.failed &= keep
-        self.base = len(self.order)
+
+# --------------------------------------------------------------------------
+# Groq transport
 
 
-class StreamingSession:
-    """One live recognition session for exactly one recording."""
+def encode_wav(audio, rate):
+    """Mono 16 kHz PCM16 WAV bytes (resampled when the device rate differs)."""
+    data = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if int(rate) != WIRE_RATE and data.size > 1:
+        length = max(1, int(round(data.size * WIRE_RATE / int(rate))))
+        data = np.interp(np.linspace(0, data.size - 1, length), np.arange(data.size), data)
+    pcm = (np.clip(data, -1.0, 1.0) * 32767.0).astype("<i2")
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(WIRE_RATE)
+        handle.writeframes(pcm.tobytes())
+    return buffer.getvalue()
 
-    def __init__(self, settings, *, input_rate=16000, transport_factory=None,
+
+def is_groq_endpoint(client):
+    """Refuse any client whose base URL is not Groq over HTTPS."""
+    base = getattr(client, "base_url", None)
+    if base is None:
+        return True  # injected test double without a transport
+    parts = urlsplit(str(base))
+    host = (parts.hostname or "").lower()
+    return parts.scheme == "https" and (host == "groq.com" or host.endswith(".groq.com"))
+
+
+def groq_transcribe(client, model, wav, *, language="", timeout=4.0):
+    """One bounded Groq Whisper request; returns (result, headers or None)."""
+    if not is_groq_endpoint(client):
+        raise PreviewUnavailable("client is not a Groq endpoint")
+    kwargs = {
+        "file": ("preview.wav", wav),
+        "model": model,
+        "response_format": "verbose_json",
+        "temperature": 0.0,
+        "timeout": timeout,
+    }
+    if language:
+        kwargs["language"] = language
+    api = client.audio.transcriptions
+    raw = getattr(api, "with_raw_response", None)
+    if raw is not None and callable(getattr(raw, "create", None)):
+        response = raw.create(**kwargs)
+        return response.parse(), getattr(response, "headers", None)
+    return api.create(**kwargs), None
+
+
+def _header(headers, name):
+    if not headers:
+        return None
+    getter = getattr(headers, "get", None)
+    if getter is not None:
+        value = getter(name)
+        if value is not None:
+            return str(value)
+    try:
+        items = headers.items()
+    except AttributeError:
+        return None
+    for key, value in items:
+        if str(key).lower() == name:
+            return str(value)
+    return None
+
+
+def parse_duration(value):
+    """Seconds from "12", "7.66s", "2m59.56s", "1h2m" or "250ms"; else None."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    try:
+        number = float(text)
+        return number if math.isfinite(number) and number >= 0 else None
+    except ValueError:
+        pass
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s)", text)
+    if not parts or "".join(n + u for n, u in parts) != text:
+        return None
+    scale = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+    return sum(float(n) * scale[u] for n, u in parts)
+
+
+def classify_error(exc):
+    """Map an SDK/transport exception to (kind, retry_after) without text."""
+    response = getattr(exc, "response", None)
+    status = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    if status == 429:
+        return "rate_limited", parse_duration(_header(getattr(response, "headers", None), "retry-after"))
+    if status in (401, 403):
+        return "auth", None
+    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+        return "timeout", None
+    return "error", None
+
+
+# --------------------------------------------------------------------------
+# Process-wide budget
+
+
+class PreviewBudget:
+    """Conservative, process-wide accounting of Groq requests and audio.
+
+    Finals are recorded too and always win: previews never start while a
+    final is in flight and only use a share of each free-tier limit.
+    """
+
+    def __init__(self, *, clock=time.monotonic, limits=None, share=0.4, rpm_cap=12,
+                 min_billed=MIN_BILLED_SECONDS, max_strikes=3, header_reserve=0.05):
+        self.clock = clock
+        self.limits = dict(FREE_TIER_LIMITS if limits is None else limits)
+        self.share = share
+        self.rpm_cap = min(rpm_cap, self.limits["requests_per_minute"])
+        self.min_billed = min_billed
+        self.max_strikes = max_strikes
+        self.header_reserve = header_reserve
+        self._lock = threading.Lock()
+        self._events = deque(maxlen=20000)  # (time, billed seconds, kind)
+        self._strikes = deque()
+        self._cooldown_until = 0.0
+        self._disabled = ""
+        self._preview_in_flight = None
+        self._finals_in_flight = 0
+
+    def billed(self, seconds):
+        return max(self.min_billed, float(seconds))
+
+    def _prune(self, now):
+        while self._events and now - self._events[0][0] > 86400.0:
+            self._events.popleft()
+        while self._strikes and now - self._strikes[0] > 86400.0:
+            self._strikes.popleft()
+
+    def usage(self):
+        with self._lock:
+            now = self.clock()
+            self._prune(now)
+            return self._usage(now)
+
+    def _usage(self, now):
+        minute = sum(1 for t, _, _ in self._events if now - t < 60.0)
+        hour_audio = sum(b for t, b, _ in self._events if now - t < 3600.0)
+        day_audio = sum(b for _, b, _ in self._events)
+        return {"requests_minute": minute, "requests_day": len(self._events),
+                "audio_hour": hour_audio, "audio_day": day_audio}
+
+    def disabled_reason(self):
+        with self._lock:
+            return self._disabled
+
+    def in_flight(self):
+        with self._lock:
+            return self._preview_in_flight is not None
+
+    def cooldown_remaining(self):
+        with self._lock:
+            return max(0.0, self._cooldown_until - self.clock())
+
+    def try_begin_preview(self, seconds):
+        """Reserve one preview request; returns a token or (None, reason)."""
+        with self._lock:
+            now = self.clock()
+            if self._disabled:
+                return None, "disabled"
+            if now < self._cooldown_until:
+                return None, "cooldown"
+            if self._finals_in_flight:
+                return None, "final in progress"
+            if self._preview_in_flight is not None and now - self._preview_in_flight[0] < 30.0:
+                # Single flight. A request abandoned far past its bounded
+                # timeout cannot block previews for the rest of the process.
+                return None, "in flight"
+            self._prune(now)
+            usage = self._usage(now)
+            billed = self.billed(seconds)
+            if usage["requests_minute"] + 1 > self.rpm_cap:
+                return None, "rpm"
+            if usage["requests_day"] + 1 > self.limits["requests_per_day"] * self.share:
+                return None, "daily requests"
+            if usage["audio_hour"] + billed > self.limits["audio_seconds_per_hour"] * self.share:
+                return None, "hourly audio"
+            if usage["audio_day"] + billed > self.limits["audio_seconds_per_day"] * self.share:
+                return None, "daily audio"
+            token = (now, billed, "preview")
+            self._events.append(token)
+            self._preview_in_flight = token
+            return token, None
+
+    def end_preview(self, token, outcome, *, retry_after=None, headers=None):
+        with self._lock:
+            now = self.clock()
+            if self._preview_in_flight is token:
+                self._preview_in_flight = None
+            if outcome == "not_sent":
+                try:
+                    self._events.remove(token)
+                except ValueError:
+                    pass
+                return
+            if outcome == "rate_limited":
+                self._strikes.append(now)
+                strikes = len(self._strikes)
+                if strikes >= self.max_strikes:
+                    self._disabled = "rate limited repeatedly"
+                else:
+                    wait = max(60.0, retry_after or 0.0) * (2 ** (strikes - 1))
+                    self._cooldown_until = max(self._cooldown_until, now + min(3600.0, wait))
+            elif outcome == "auth":
+                self._disabled = "authentication failed"
+            elif outcome in ("timeout", "error"):
+                self._cooldown_until = max(self._cooldown_until, now + 10.0)
+            elif outcome == "ok":
+                self._apply_headers(now, headers)
+
+    def _apply_headers(self, now, headers):
+        remaining = _number(_header(headers, "x-ratelimit-remaining-requests"), None)
+        if remaining is None:
+            return
+        limit = _number(_header(headers, "x-ratelimit-limit-requests"), None) \
+            or self.limits["requests_per_day"]
+        if remaining <= max(20.0, limit * self.header_reserve):
+            # The organization (maybe other devices) is near its daily cap:
+            # leave the rest to final dictation until the counter resets.
+            reset = parse_duration(_header(headers, "x-ratelimit-reset-requests"))
+            self._cooldown_until = max(self._cooldown_until, now + (reset if reset else 3600.0))
+
+    def record_final(self, seconds):
+        with self._lock:
+            self._events.append((self.clock(), self.billed(seconds), "final"))
+
+    @contextmanager
+    def final_priority(self, seconds):
+        with self._lock:
+            self._finals_in_flight += 1
+            self._events.append((self.clock(), self.billed(seconds), "final"))
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._finals_in_flight -= 1
+
+
+_DEFAULT_BUDGET = PreviewBudget()
+
+
+def default_budget():
+    return _DEFAULT_BUDGET
+
+
+def final_priority(audio_seconds):
+    """Wrap every final request: previews yield and its cost is counted."""
+    return _DEFAULT_BUDGET.final_priority(audio_seconds)
+
+
+# --------------------------------------------------------------------------
+# Thread-free core (shared by the session and the deterministic benchmark)
+
+
+class PreviewCore:
+    """Scheduling, budgeting and reconciliation for one recording."""
+
+    def __init__(self, settings, rate, *, budget=None, log=None):
+        self.settings = settings
+        self.planner = WindowPlanner(settings, rate)
+        self.reconciler = TextReconciler()
+        self.budget = budget or default_budget()
+        self.disabled = ""
+        self.failures = 0
+        self.requests = 0
+        self.next_check = 0.0
+        self.stats = {"sent": 0, "ok": 0, "published": 0, "silence": 0, "filtered": 0,
+                      "denied": 0, "failed": 0, "discarded": 0, "overflows": 0}
+        self._log = log
+        self._last_denial = ""
+
+    @property
+    def text(self):
+        return self.reconciler.text
+
+    def feed(self, chunk):
+        self.planner.add(chunk)
+
+    def discontinuity(self, lost_samples=0):
+        self.stats["overflows"] += 1
+        self.planner.discontinuity(lost_samples)
+
+    def disable(self, reason):
+        if not self.disabled:
+            self.disabled = reason
+            self.say(f"preview disabled for this recording ({reason})")
+
+    def next_window(self, now):
+        """Return a budget-reserved (window, token) to send, or None."""
+        if self.disabled or now < self.next_check:
+            return None
+        if self.requests >= self.settings.max_requests:
+            self.disable("request limit")
+            return None
+        window, reason = self.planner.propose()
+        if window is None:
+            if reason == "silence":
+                self.stats["silence"] += 1
+            return None
+        token, denied = self.budget.try_begin_preview(window.duration)
+        if token is None:
+            self.stats["denied"] += 1
+            if denied != self._last_denial:
+                self._last_denial = denied
+                self.say(f"preview deferred ({denied})")
+            if denied in PERMANENT_DENIALS:
+                self.disable(f"budget: {denied}")
+            else:
+                self.next_check = now + 0.25
+            return None
+        self._last_denial = ""
+        # Single flight: the caller proposes nothing else until
+        # finish_request() commits (or releases) this window.
+        self.requests += 1
+        self.stats["sent"] += 1
+        return window, token
+
+    def finish_request(self, window, token, outcome, now, *, result=None, headers=None,
+                       retry_after=None, discard=False):
+        """Account for a request; returns new preview text or None."""
+        self.budget.end_preview(token, outcome, retry_after=retry_after, headers=headers)
+        if outcome == "not_sent":
+            # Nothing left the process: refund it and retry this audio later.
+            self.requests = max(0, self.requests - 1)
+            self.stats["sent"] = max(0, self.stats["sent"] - 1)
+            if not discard:
+                self.next_check = now + self.settings.interval_seconds / 2
+            return None
+        self.planner.commit(window, delivered=outcome == "ok" and not discard)
+        if outcome != "ok":
+            self.stats["failed"] += 1
+            self.say(f"preview request failed ({outcome})")
+            if outcome in ("rate_limited", "auth"):
+                self.disable(outcome.replace("_", " "))
+            else:
+                self.failures += 1
+                if self.failures >= self.settings.max_failures:
+                    self.disable("repeated failures")
+                else:
+                    self.next_check = now + self.settings.interval_seconds
+            return None
+        self.failures = 0
+        self.stats["ok"] += 1
+        if discard:
+            self.stats["discarded"] += 1
+            return None
+        text = clean_preview_text(result)
+        if not text:
+            self.stats["filtered"] += 1
+            return None
+        if not self.reconciler.add(text, overlap=window.overlap, gap=window.gap):
+            return None
+        self.stats["published"] += 1
+        return self.reconciler.text
+
+    def say(self, message):
+        # Status only: never transcript text, audio or credentials.
+        if self._log is not None:
+            try:
+                self._log(message)
+            except Exception:
+                pass
+
+
+# --------------------------------------------------------------------------
+# Threaded session
+
+
+class GroqChunkSession:
+    """Display-only live preview for exactly one recording."""
+
+    def __init__(self, settings, *, input_rate=16000, client_provider=None, budget=None,
                  on_partial=None, log=None):
         self.settings = settings
         self.input_rate = int(input_rate) if input_rate else 16000
-        self._factory = transport_factory or default_transport_factory
+        self._provider = client_provider
         self._on_partial = on_partial
         self._log = log
-        self._audio = queue.Queue(maxsize=max(1, int(settings.max_queue_chunks)))
-        # Guards transcript state, flags and partial delivery: once cancel()
-        # or finish() returns, no partial callback can still be in flight.
+        self._queue = queue.Queue(maxsize=max(1, int(settings.max_queue_chunks)))
+        self._overflow_samples = 0
+        # Guards the core and partial delivery: after stop()/cancel() return,
+        # no partial callback can still be running or start later.
         self._lock = threading.RLock()
-        self._finish = threading.Event()
-        self._done = threading.Event()
+        self._stopped = threading.Event()
+        self._stop_reason = ""
+        self._core = PreviewCore(settings, self.input_rate, budget=budget, log=log)
         self._thread = None
-        self._transport = None
-        self._state = TranscriptState()
-        self._closed = False
-        self._cancelled = False
-        self._result = None
-        self._error = ""
-        self._audio_dropped = False
-        self._gap = False
-        self._reconnects = 0
-        self._in_samples = 0
-        self._out_samples = 0
-        self._commit_sent = False
-        self._commit_acked = False
-        self._last_commit = 0.0
-        self._last_partial = ""
+        self._request_thread = None
 
     def __repr__(self):
-        return f"<StreamingSession model={self.settings.model!r} done={self._done.is_set()}>"
+        return (f"<GroqChunkSession rate={self.input_rate} stopped={self._stopped.is_set()} "
+                f"requests={self._core.requests}>")
+
+    @property
+    def active(self):
+        return not self._stopped.is_set()
+
+    @property
+    def stop_reason(self):
+        return self._stop_reason
+
+    @property
+    def preview_text(self):
+        """Current preview; display only, never a dictation result."""
+        with self._lock:
+            return self._core.text
+
+    def stats(self):
+        with self._lock:
+            return dict(self._core.stats, requests=self._core.requests,
+                        disabled=self._core.disabled, buffered=self._core.planner.buffered_samples())
 
     def set_partial_callback(self, callback):
         with self._lock:
             self._on_partial = callback
 
     def start(self):
-        if self._thread is None:
-            self._thread = threading.Thread(
-                target=self._run, name="protocol7-live-stt", daemon=True,
-            )
+        if self._thread is None and not self._stopped.is_set():
+            self._thread = threading.Thread(target=self._run, name="protocol7-preview", daemon=True)
             self._thread.start()
 
     def push_audio(self, chunk):
-        """Queue one captured chunk. Called from PortAudio: never blocks."""
-        if self._finish.is_set() or self._done.is_set():
+        """Queue one captured chunk. Runs on the PortAudio thread: never blocks."""
+        if self._stopped.is_set():
             return
         try:
-            self._audio.put_nowait(chunk)
+            self._queue.put_nowait(chunk)
         except queue.Full:
-            # The live copy is now incomplete; the batch recording is not.
-            self._audio_dropped = True
+            try:
+                self._overflow_samples += len(chunk)
+            except TypeError:
+                self._overflow_samples += 1
 
-    def finish(self, timeout=None):
-        """Stop accepting audio and wait for a verified final transcript."""
+    def stop(self, reason="stopped"):
+        """End previews now. An in-flight request is abandoned, not awaited."""
         with self._lock:
-            if self._result is not None:
-                return self._result
-        self._finish.set()
-        wait = self.settings.finalize_timeout if timeout is None else timeout
-        completed = self._thread is not None and self._done.wait(max(0.0, wait))
-        with self._lock:
-            if self._result is None:
-                self._closed = True
-                text = self._state.text()
-                reason = self._failure_locked(completed, text)
-                self._result = StreamingResult(
-                    reason is None, text if reason is None else "", reason or "verified",
-                )
-            result = self._result
-        self._close_transport()
-        self._say(f"finalize verified={result.verified} reason={result.reason}")
-        return result
+            if self._stopped.is_set():
+                return
+            self._stop_reason = reason
+            self._stopped.set()
+        self._core.say(f"preview stopped ({reason})")
 
     def cancel(self):
-        """Abandon the session; late provider events are ignored."""
-        with self._lock:
-            if self._result is None:
-                self._cancelled = True
-                self._result = StreamingResult(False, "", "cancelled")
-                self._say("cancelled")
-            self._closed = True
-        self._finish.set()
-        self._close_transport()
+        self.stop("cancelled")
 
-    def _failure_locked(self, completed, text):
-        if self._cancelled:
-            return "cancelled"
-        if self._thread is None:
-            return "not started"
-        if not completed:
-            return "timeout"
-        if self._error:
-            return self._error
-        if self._audio_dropped:
-            return "audio dropped"
-        if self._gap:
-            return "connection interrupted"
-        if not self._commit_acked:
-            return "final commit not acknowledged"
-        if self._state.pending():
-            return "transcription incomplete"
-        if not text:
-            return "empty transcript"
-        return None
+    def join(self, timeout=None):
+        """Test helper: wait for the worker and any request thread."""
+        for thread in (self._thread, self._request_thread):
+            if thread is not None:
+                thread.join(timeout)
+
+    def _drain(self, timeout):
+        chunks = []
+        try:
+            chunks.append(self._queue.get(timeout=timeout))
+            while len(chunks) < 256:
+                chunks.append(self._queue.get_nowait())
+        except queue.Empty:
+            pass
+        return chunks
 
     def _run(self):
+        started = last_audio = time.monotonic()
         try:
-            if not self._open():
-                return
-            self._say("connected")
-            while not self._closed:
-                try:
-                    sent = self._pump_audio()
-                    if self._finish.is_set() and not sent and self._audio.empty():
-                        if self._error or self._audio_dropped or self._gap:
-                            return  # cannot verify; let the caller fall back now
-                        if not self._commit_sent:
-                            self._send_commit()
-                        if self._finalized():
-                            return
-                    raw = self._transport.recv(0.005 if sent else 0.03)
-                except TransportClosed:
-                    if self._closed or not self._reconnect():
-                        return
-                    continue
-                if raw is not None:
-                    self._dispatch(raw)
+            while not self._stopped.is_set():
+                chunks = self._drain(0.05)
+                now = time.monotonic()
+                if chunks:
+                    last_audio = now
+                elif now - last_audio > self.settings.idle_timeout:
+                    self.stop("idle")  # recorder gone: a dead session never calls Groq
+                    break
+                if now - started > self.settings.max_session_seconds:
+                    self.stop("session limit")
+                    break
+                with self._lock:
+                    if self._stopped.is_set():
+                        break
+                    lost, self._overflow_samples = self._overflow_samples, 0
+                    if lost:
+                        self._core.discontinuity(lost)
+                    for chunk in chunks:
+                        self._core.feed(chunk)
+                    busy = self._request_thread is not None and self._request_thread.is_alive()
+                    plan = None if busy else self._core.next_window(now)
+                    if plan is not None:
+                        self._request_thread = threading.Thread(
+                            target=self._request, args=plan,
+                            name="protocol7-preview-request", daemon=True,
+                        )
+                        self._request_thread.start()
         except Exception as exc:
-            self._error = self._error or f"internal error ({type(exc).__name__})"
-        finally:
-            self._done.set()
-            self._close_transport()
+            self._core.say(f"preview worker error ({type(exc).__name__})")
+            self.stop("error")
 
-    def _open(self):
+    def _request(self, window, token):
+        outcome, result, headers, retry_after = "not_sent", None, None, None
         try:
-            transport = self._factory(self.settings)
-        except Exception as exc:
-            self._error = self._error or f"connect failed ({type(exc).__name__})"
-            return False
-        with self._lock:
-            closed = self._closed
-            if not closed:
-                self._transport = transport
-        if closed:
             try:
-                transport.close()
+                info = self._provider() if self._provider is not None else None
             except Exception:
-                pass
-            return False
-        try:
-            transport.send(json.dumps(self._session_update()))
+                info = None
+            if not info:
+                raise PreviewUnavailable("Groq client not ready")
+            client, model = info
+            wav = encode_wav(window.audio, window.rate)
+            # Final check: a stopped, cancelled or stale recording never
+            # reaches Groq, even if its window was already planned.
+            if not self._stopped.is_set():
+                result, headers = groq_transcribe(
+                    client, model, wav, language=self.settings.language,
+                    timeout=self.settings.request_timeout,
+                )
+                outcome = "ok"
+        except PreviewUnavailable:
+            outcome = "not_sent"
         except Exception as exc:
-            self._error = self._error or f"session setup failed ({type(exc).__name__})"
-            return False
-        return True
-
-    def _reconnect(self):
-        if self._finish.is_set() or self._reconnects >= self.settings.max_reconnects:
-            self._error = self._error or "connection lost"
-            return False
-        self._reconnects += 1
+            outcome, retry_after = classify_error(exc)
         with self._lock:
-            # Uncommitted server-side audio died with the socket. Completed
-            # text still serves as a preview, but the final must be batch.
-            self._gap = True
-            self._state.drop_incomplete()
-        self._say("reconnecting")
-        self._close_transport()
-        if self._finish.wait(self.settings.reconnect_delay):
-            self._error = self._error or "connection lost"
-            return False
-        return self._open()
-
-    def _session_update(self):
-        transcription = {"model": self.settings.model}
-        if self.settings.language:
-            # gpt-live-transcribe expects language hints as a list (unlike
-            # older transcription models, which accepted singular language).
-            transcription["languages"] = [self.settings.language]
-        return {
-            "type": "session.update",
-            "session": {
-                "type": "transcription",
-                "audio": {
-                    "input": {
-                        "format": {"type": "audio/pcm", "rate": WIRE_RATE},
-                        "transcription": transcription,
-                        # The recording hotkey defines the exact turn boundary.
-                        # The low-latency model still streams deltas before
-                        # the explicit stop-time buffer commit.
-                        "turn_detection": None,
-                    },
-                },
-            },
-        }
-
-    def _pump_audio(self, max_chunks=64):
-        chunks = []
-        while len(chunks) < max_chunks:
-            try:
-                chunks.append(self._audio.get_nowait())
-            except queue.Empty:
-                break
-        if not chunks:
-            return False
-        audio = np.concatenate([np.asarray(c, dtype=np.float32).reshape(-1) for c in chunks])
-        payload = self._wire_bytes(audio)
-        if payload:
-            self._transport.send(json.dumps({
-                "type": "input_audio_buffer.append",
-                "audio": base64.b64encode(payload).decode("ascii"),
-            }))
-        return True
-
-    def _wire_bytes(self, audio):
-        """Resample to 24 kHz PCM16, tracking position across batches."""
-        start = self._in_samples
-        self._in_samples += audio.size
-        total = int(round(self._in_samples * WIRE_RATE / self.input_rate))
-        count = total - self._out_samples
-        if count <= 0 or audio.size == 0:
-            return b""
-        if self.input_rate == WIRE_RATE and count == audio.size:
-            wire = audio
-        else:
-            positions = np.arange(self._out_samples, total) * (self.input_rate / WIRE_RATE) - start
-            wire = np.interp(positions, np.arange(audio.size), audio)
-        self._out_samples = total
-        return (np.clip(wire, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
-
-    def _send_commit(self):
-        self._commit_sent = True
-        if self._out_samples == 0:
-            # Nothing was ever appended, so there is no buffer to commit.
-            with self._lock:
-                self._commit_acked = True
-            return
-        self._transport.send(json.dumps({
-            "type": "input_audio_buffer.commit", "event_id": COMMIT_EVENT_ID,
-        }))
-
-    def _finalized(self):
-        with self._lock:
-            return (
-                self._commit_acked and self._state.pending() == 0
-                and time.monotonic() - self._last_commit >= self.settings.settle_seconds
+            text = self._core.finish_request(
+                window, token, outcome, time.monotonic(), result=result, headers=headers,
+                retry_after=retry_after, discard=self._stopped.is_set(),
             )
-
-    def _dispatch(self, raw):
-        try:
-            event = json.loads(raw)
-        except (TypeError, ValueError):
-            return
-        if not isinstance(event, dict):
-            return
-        etype = event.get("type")
-        item_id = event.get("item_id")
-        with self._lock:
-            if self._closed:
+            if text is None or self._stopped.is_set() or self._on_partial is None:
                 return
-            if etype == "error":
-                error = event.get("error") if isinstance(event.get("error"), dict) else {}
-                code = str(error.get("code") or error.get("type") or "unknown")[:64]
-                if code == ERROR_COMMIT_EMPTY:
-                    # Server VAD already committed everything we sent.
-                    if self._commit_sent:
-                        self._commit_acked = True
-                        self._last_commit = time.monotonic()
-                    return
-                # Provider messages may quote input; keep only the code.
-                if not self._error:
-                    self._error = f"provider error ({code})"
-                    self._say(self._error)
-                return
-            if not isinstance(item_id, str) or not item_id:
-                return
-            if etype == EVENT_COMMITTED:
-                self._state.commit(item_id, event.get("previous_item_id"), "previous_item_id" in event)
-                self._last_commit = time.monotonic()
-                if self._commit_sent:
-                    self._commit_acked = True
-            elif etype == EVENT_DELTA:
-                self._state.delta(item_id, str(event.get("delta") or ""))
-            elif etype == EVENT_COMPLETED:
-                self._state.complete(item_id, str(event.get("transcript") or ""))
-            elif etype == EVENT_FAILED:
-                self._state.fail(item_id)
-                if not self._error:
-                    self._error = "item transcription failed"
-                    self._say(self._error)
-            else:
-                return
-            self._publish_partial_locked()
-
-    def _publish_partial_locked(self):
-        text = self._state.text()
-        if not text or text == self._last_partial:
-            return
-        self._last_partial = text
-        if self._on_partial is not None:
             try:
                 self._on_partial(text)
-            except Exception:
-                pass
-
-    def _close_transport(self):
-        transport = self._transport
-        if transport is not None:
-            try:
-                transport.close()
-            except Exception:
-                pass
-
-    def _say(self, message):
-        # Status only: never transcript text or credentials.
-        if self._log is not None:
-            try:
-                self._log(message)
             except Exception:
                 pass

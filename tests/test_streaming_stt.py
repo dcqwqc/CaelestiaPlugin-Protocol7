@@ -1,15 +1,16 @@
-"""Unit tests for the opt-in live transcription session.
+"""Threaded session tests for the opt-in groq-chunks live preview.
 
-Everything runs offline: sockets are blocked for this module and every
-session uses an in-memory fake transport.
+These replace the former OpenAI Realtime session tests while keeping their
+intent: capture never blocks, overflow and failures only degrade the
+preview, late provider results are ignored after stop/cancel, nothing secret
+or spoken is logged. Everything is offline: sockets are blocked for the
+module and Groq is a local fake object. Audio is synthesized.
 """
-import base64
-import json
-import queue
 import socket
 import sys
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -20,8 +21,8 @@ import numpy as np
 
 import streaming_stt as st
 
-KEY = "sk-test-SECRET-do-not-log"
-DROP = object()
+R = 16000
+SECRET = "gsk_test-SECRET-do-not-log"
 _socket_guard = None
 
 
@@ -38,26 +39,19 @@ def tearDownModule():
     _socket_guard.stop()
 
 
-def enabled_config(**overrides):
-    config = {
-        "streaming_stt_enabled": True,
-        "streaming_stt_provider": "openai-realtime",
-        "streaming_stt_api_key": KEY,
-        "streaming_stt_billing_authorized": True,
-        "streaming_stt_model": "gpt-live-transcribe",
-    }
-    config.update(overrides)
-    return config
+def voiced(seconds, amp=0.1, f0=140.0):
+    t = np.arange(int(round(seconds * R))) / R
+    tone = sum((0.6 ** k) * np.sin(2 * np.pi * f0 * (k + 1) * t) for k in range(5))
+    envelope = 0.55 + 0.45 * np.sin(2 * np.pi * 4.0 * t)
+    return (amp * tone * envelope / np.max(np.abs(tone))).astype(np.float32)
 
 
-def fast_settings(**overrides):
-    values = {"api_key": KEY, "settle_seconds": 0.05, "finalize_timeout": 2.0,
-              "reconnect_delay": 0.01}
-    values.update(overrides)
-    return st.StreamingSettings(**values)
+def quiet(seconds):
+    rng = np.random.default_rng(0)
+    return (rng.standard_normal(int(round(seconds * R))) * 0.0005).astype(np.float32)
 
 
-def wait_until(predicate, timeout=2.0):
+def wait_until(predicate, timeout=3.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -66,407 +60,367 @@ def wait_until(predicate, timeout=2.0):
     return predicate()
 
 
-def committed(item, previous=None):
-    return {"type": st.EVENT_COMMITTED, "item_id": item, "previous_item_id": previous}
+def fast_settings(**overrides):
+    # Short windows keep threaded tests quick; production values are tested
+    # in test_groq_chunks.WindowPlannerTests.
+    values = dict(interval_seconds=0.5, overlap_seconds=0.2, first_preview_seconds=0.5,
+                  min_window_speech_seconds=0.3, min_new_speech_seconds=0.2,
+                  request_timeout=1.0, idle_timeout=30.0)
+    values.update(overrides)
+    return st.PreviewSettings(**values)
 
 
-def delta(item, text):
-    return {"type": st.EVENT_DELTA, "item_id": item, "content_index": 0, "delta": text}
+class StatusError(Exception):
+    def __init__(self, status, headers=None):
+        super().__init__("upstream echoed: private words")
+        self.status_code = status
+        self.response = types.SimpleNamespace(status_code=status, headers=headers or {})
 
 
-def completed(item, text):
-    return {"type": st.EVENT_COMPLETED, "item_id": item, "content_index": 0, "transcript": text}
+class APITimeoutError(Exception):
+    pass
 
 
-def commit_empty():
-    return {"type": "error", "error": {"type": "invalid_request_error",
-                                       "code": st.ERROR_COMMIT_EMPTY,
-                                       "message": "buffer empty"}}
+class FakeTranscriptions:
+    def __init__(self, replies=None, error=None, gate=None):
+        self.replies = list(replies or [])
+        self.error = error
+        self.gate = gate
+        self.calls = []
+        self.threads = []
+        self.active = 0
+        self.max_active = 0
+        self._lock = threading.Lock()
 
-
-def chunk(n=1600, value=0.1):
-    return np.full(n, value, dtype=np.float32)
-
-
-class FakeTransport:
-    def __init__(self, on_send=None):
-        self.sent = []
-        self.inbox = queue.Queue()
-        self.closed = threading.Event()
-        self.on_send = on_send
-
-    def send(self, text):
-        if self.closed.is_set():
-            raise st.TransportClosed("closed")
-        message = json.loads(text)
-        self.sent.append(message)
-        if self.on_send is not None:
-            self.on_send(self, message)
-
-    def recv(self, timeout):
-        if self.closed.is_set():
-            raise st.TransportClosed("closed")
+    def create(self, **kwargs):
+        with self._lock:
+            self.calls.append(kwargs)
+            self.threads.append(threading.current_thread())
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
         try:
-            item = self.inbox.get(timeout=timeout)
-        except queue.Empty:
-            return None
-        if item is DROP:
-            self.closed.set()
-            raise st.TransportClosed("dropped")
-        return json.dumps(item)
-
-    def emit(self, event):
-        self.inbox.put(event)
-
-    def drop(self):
-        self.inbox.put(DROP)
-
-    def close(self):
-        self.closed.set()
-
-    def types(self):
-        return [m["type"] for m in self.sent]
-
-    def appended_bytes(self):
-        return b"".join(base64.b64decode(m["audio"]) for m in self.sent
-                        if m["type"] == "input_audio_buffer.append")
+            if self.gate is not None:
+                self.gate.wait(5.0)
+            if self.error is not None:
+                raise self.error
+            text = self.replies.pop(0) if self.replies else "private words"
+            return {"text": text}
+        finally:
+            with self._lock:
+                self.active -= 1
 
 
-def respond_on_commit(*events):
-    def hook(transport, message):
-        if message["type"] == "input_audio_buffer.commit":
-            for event in events:
-                transport.emit(event)
-    return hook
+class FakeClient:
+    def __init__(self, transcriptions):
+        self.audio = types.SimpleNamespace(transcriptions=transcriptions)
+        self.base_url = "https://api.groq.com/openai/v1"
+        self.api_key = SECRET
 
 
-class SessionTests(unittest.TestCase):
-    def make(self, transport, factory=None, settings=None):
+class SessionTestCase(unittest.TestCase):
+    def make(self, api=None, *, settings=None, budget=None, provider=None, model="whisper-large-v3-turbo"):
+        api = api if api is not None else FakeTranscriptions()
+        client = FakeClient(api)
         partials, logs = [], []
-        session = st.StreamingSession(
-            settings or fast_settings(), input_rate=16000,
-            transport_factory=factory or (lambda _settings: transport),
-            on_partial=partials.append, log=logs.append,
+        budget = budget or st.PreviewBudget()
+        session = st.GroqChunkSession(
+            settings or fast_settings(), input_rate=R,
+            client_provider=provider or (lambda: (client, model)),
+            budget=budget, on_partial=partials.append, log=logs.append,
         )
+        self.addCleanup(session.join, 1.0)
         self.addCleanup(session.cancel)
-        return session, partials, logs
+        return session, api, partials, logs, budget
 
-    def test_session_update_requests_transcription_session(self):
-        t = FakeTransport()
-        s, _, _ = self.make(t)
-        s.start()
-        self.assertTrue(wait_until(lambda: t.sent))
-        message = t.sent[0]
-        self.assertEqual(message["type"], "session.update")
-        session = message["session"]
-        self.assertEqual(session["type"], "transcription")
-        audio_in = session["audio"]["input"]
-        self.assertEqual(audio_in["transcription"]["model"], "gpt-live-transcribe")
-        self.assertEqual(audio_in["format"], {"type": "audio/pcm", "rate": 24000})
-        self.assertIsNone(audio_in["turn_detection"])
-        # Live transcription without server VAD must still stream partials.
-        self.assertEqual(audio_in["transcription"]["model"], "gpt-live-transcribe")
-        self.assertNotIn(KEY, json.dumps(message))
+    @staticmethod
+    def push(session, audio, chunk=512):
+        for i in range(0, len(audio), chunk):
+            session.push_audio(audio[i:i + chunk])
 
-    def test_audio_resampled_to_24k_pcm16_without_loss(self):
-        t = FakeTransport(respond_on_commit(committed("i1"), completed("i1", "hello there")))
-        s, _, _ = self.make(t)
-        # Chunks pushed before the connection exists are queued, not lost.
-        for _ in range(3):
-            s.push_audio(chunk(1600))
-        s.start()
-        for _ in range(6):
-            s.push_audio(chunk(1601))
-        result = s.finish()
-        self.assertTrue(result.verified, result.reason)
-        self.assertEqual(result.text, "hello there")
-        total = 3 * 1600 + 6 * 1601
-        wire = np.frombuffer(t.appended_bytes(), dtype="<i2")
-        self.assertEqual(len(wire), round(total * 24000 / 16000))
-        self.assertTrue(np.all(np.abs(wire.astype(int) - 3277) <= 1))
-        self.assertEqual(t.types().count("input_audio_buffer.commit"), 1)
 
-    def test_partials_follow_item_order_and_finals_replace_deltas(self):
-        t = FakeTransport()
-        s, partials, _ = self.make(t)
+class PreviewFlowTests(SessionTestCase):
+    def test_preview_is_published_while_recording(self):
+        s, api, partials, logs, _ = self.make(FakeTranscriptions(["Hello there."]))
         s.start()
-        # Item b names a as its predecessor before a's own commit arrives.
-        t.emit(committed("b", "a"))
-        t.emit(delta("b", "two"))
-        t.emit(committed("a", None))
-        t.emit(delta("a", "one"))
-        self.assertTrue(wait_until(lambda: partials and partials[-1] == "one two"))
-        t.emit(completed("a", "One."))
-        self.assertTrue(wait_until(lambda: partials[-1] == "One. two"))
-        t.emit(delta("a", " ignored late delta"))
-        t.emit(completed("b", "Two."))
-        self.assertTrue(wait_until(lambda: partials[-1] == "One. Two."))
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: partials == ["Hello there."]))
+        self.assertEqual(s.preview_text, "Hello there.")
+        call = api.calls[0]
+        self.assertEqual(call["model"], "whisper-large-v3-turbo")
+        self.assertEqual(call["response_format"], "verbose_json")
+        self.assertEqual(call["timeout"], 1.0)
+        self.assertTrue(call["file"][1].startswith(b"RIFF"))
+        self.assertEqual(logs, [])  # nothing noteworthy happened
 
-    def test_commit_empty_after_server_vad_is_verified(self):
-        t = FakeTransport(respond_on_commit(commit_empty()))
-        s, _, _ = self.make(t)
+    def test_overlapping_windows_merge_without_duplicates(self):
+        s, api, partials, _, _ = self.make(FakeTranscriptions([
+            "We should meet on Monday at.", "Monday at noon to plan it."]))
         s.start()
-        s.push_audio(chunk())
-        t.emit(committed("i1"))
-        t.emit(completed("i1", "said it"))
-        result = s.finish()
-        self.assertTrue(result.verified, result.reason)
-        self.assertEqual(result.text, "said it")
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: len(partials) == 1))
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: len(partials) == 2))
+        self.assertEqual(partials[-1], "We should meet on Monday at noon to plan it.")
 
-    def test_final_waits_for_pending_speech_burst(self):
-        t = FakeTransport(respond_on_commit(commit_empty()))
-        s, _, _ = self.make(t)
+    def test_language_hint_and_selected_model_are_forwarded(self):
+        s, api, partials, _, _ = self.make(settings=fast_settings(language="de"), model="whisper-large-v3")
         s.start()
-        s.push_audio(chunk())
-        t.emit(committed("i1"))
-        t.emit(completed("i1", "first burst"))
-        t.emit(committed("i2", "i1"))
-        timer = threading.Timer(0.15, t.emit, args=(completed("i2", "second burst"),))
-        timer.start()
-        self.addCleanup(timer.cancel)
-        result = s.finish()
-        self.assertTrue(result.verified, result.reason)
-        self.assertEqual(result.text, "first burst second burst")
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: api.calls))
+        self.assertEqual(api.calls[0]["language"], "de")
+        self.assertEqual(api.calls[0]["model"], "whisper-large-v3")
 
-    def test_timeout_when_final_never_arrives(self):
-        t = FakeTransport(respond_on_commit(committed("i1")))
-        s, _, _ = self.make(t)
+    def test_silence_never_reaches_groq(self):
+        s, api, partials, _, _ = self.make()
         s.start()
-        s.push_audio(chunk())
-        result = s.finish(0.3)
-        self.assertFalse(result.verified)
-        self.assertEqual(result.reason, "timeout")
-        self.assertEqual(result.text, "")
+        self.push(s, quiet(4.0))
+        self.assertTrue(wait_until(lambda: s.stats()["silence"] >= 1))
+        time.sleep(0.1)
+        self.assertEqual(api.calls, [])
+        self.assertEqual(partials, [])
 
-    def test_late_result_after_finish_is_ignored(self):
-        t = FakeTransport(respond_on_commit(committed("i1")))
-        s, partials, _ = self.make(t)
+    def test_hallucinated_output_is_not_published(self):
+        s, api, partials, _, _ = self.make(FakeTranscriptions(["Thank you.", "Real words."]))
         s.start()
-        s.push_audio(chunk())
-        first = s.finish(0.2)
-        count = len(partials)
-        s._dispatch(json.dumps(completed("i1", "too late")))
-        self.assertEqual(len(partials), count)
-        self.assertIs(s.finish(), first)
-        self.assertFalse(first.verified)
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: s.stats()["filtered"] == 1))
+        self.assertEqual(partials, [])
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: partials == ["Real words."]))
 
-    def test_failed_item_is_not_verified(self):
-        failed = {"type": st.EVENT_FAILED, "item_id": "i1",
-                  "error": {"code": "x", "message": "spoken words"}}
-        t = FakeTransport(respond_on_commit(committed("i1"), failed))
-        s, _, _ = self.make(t)
-        s.start()
-        s.push_audio(chunk())
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertIn("failed", result.reason)
 
-    def test_provider_error_keeps_only_code(self):
-        t = FakeTransport()
-        s, _, logs = self.make(t)
+class CaptureThreadTests(SessionTestCase):
+    def test_requests_never_run_on_the_capture_thread(self):
+        s, api, partials, _, _ = self.make()
         s.start()
-        s.push_audio(chunk())
-        t.emit({"type": "error", "error": {"code": "server_error", "message": "echo private words"}})
-        self.assertTrue(wait_until(lambda: any("server_error" in line for line in logs)))
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertEqual(result.reason, "provider error (server_error)")
+        pusher = threading.Thread(target=self.push, args=(s, voiced(1.2)), name="fake-portaudio")
+        pusher.start()
+        pusher.join()
+        self.assertTrue(wait_until(lambda: len(api.calls) >= 1))
+        for thread in api.threads:
+            self.assertIsNot(thread, pusher)
+            self.assertEqual(thread.name, "protocol7-preview-request")
+
+    def test_push_audio_never_blocks_while_request_hangs(self):
+        gate = threading.Event()
+        s, api, partials, _, budget = self.make(FakeTranscriptions(gate=gate))
+        s.start()
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: api.calls))
+        chunk = voiced(0.032)
+        started = time.monotonic()
+        for _ in range(3000):
+            s.push_audio(chunk)
+        self.assertLess(time.monotonic() - started, 0.25)
+        started = time.monotonic()
+        s.stop()
+        self.assertLess(time.monotonic() - started, 0.1)  # in-flight request not awaited
+        gate.set()
+        self.assertTrue(wait_until(lambda: not budget.in_flight()))
+        self.assertEqual(partials, [])  # late result discarded
+        self.assertEqual(api.max_active, 1)
+
+    def test_queue_overflow_only_degrades_preview(self):
+        s, api, partials, _, _ = self.make(settings=fast_settings(max_queue_chunks=4))
+        for _ in range(20):  # worker not started yet: queue saturates
+            s.push_audio(voiced(0.032))
+        s.start()
+        self.assertTrue(wait_until(lambda: s.stats()["overflows"] == 1))
+        self.push(s, voiced(0.6), chunk=256)
+        self.assertTrue(s.active)
+
+
+class FailureTests(SessionTestCase):
+    def test_timeouts_disable_session_after_two_failures(self):
+        clock_budget = st.PreviewBudget()
+        api = FakeTranscriptions(error=APITimeoutError())
+        s, api, partials, logs, budget = self.make(api, budget=clock_budget)
+        s.start()
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: len(api.calls) == 1))
+        self.assertTrue(wait_until(lambda: s.stats()["failed"] == 1))
+        budget._cooldown_until = 0.0  # skip the 10 s global cooldown in this test
+        time.sleep(0.6)
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: s.stats()["disabled"] == "repeated failures"))
+        self.push(s, voiced(2.0))
+        time.sleep(0.2)
+        self.assertEqual(len(api.calls), 2)
+        self.assertEqual(partials, [])
+        self.assertIn("preview request failed (timeout)", logs)
+
+    def test_rate_limit_disables_session_and_cools_down_all_previews(self):
+        api = FakeTranscriptions(error=StatusError(429, {"retry-after": "30"}))
+        s, api, partials, logs, budget = self.make(api)
+        s.start()
+        self.push(s, voiced(1.5))
+        self.assertTrue(wait_until(lambda: s.stats()["disabled"] == "rate limited"))
+        self.assertEqual(len(api.calls), 1)
+        self.assertGreaterEqual(budget.cooldown_remaining(), 59.0)
+        other, other_api, _, _, _ = self.make(budget=budget)
+        other.start()
+        self.push(other, voiced(1.5))
+        self.assertTrue(wait_until(lambda: other.stats()["denied"] >= 1))
+        self.assertEqual(other_api.calls, [])
         self.assertNotIn("private words", " ".join(logs))
 
-    def test_connect_failure_fails_safe(self):
-        def factory(_settings):
-            raise st.TransportClosed("connect failed")
-        s, _, _ = self.make(None, factory=factory)
+    def test_auth_failure_disables_previews_process_wide(self):
+        s, api, _, _, budget = self.make(FakeTranscriptions(error=StatusError(401)))
         s.start()
-        s.push_audio(chunk())
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertTrue(result.reason.startswith("connect failed"))
-        s.push_audio(chunk())  # harmless after failure
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: budget.disabled_reason() == "authentication failed"))
 
-    def test_missing_websocket_dependency_fails_safe(self):
-        with mock.patch.dict(sys.modules, {"websocket": None}):
-            with self.assertRaises(st.StreamingUnavailable):
-                st.WebsocketTransport(fast_settings())
-            session = st.StreamingSession(fast_settings())
-            session.start()
-            session.push_audio(chunk())
-            result = session.finish()
-        self.assertFalse(result.verified)
-        self.assertIn("StreamingUnavailable", result.reason)
-
-    def test_cancel_suppresses_late_partials(self):
-        t = FakeTransport()
-        s, partials, _ = self.make(t)
+    def test_client_not_ready_is_free_and_retried(self):
+        ready = threading.Event()
+        api = FakeTranscriptions(["Now ready."])
+        client = FakeClient(api)
+        s, _, partials, _, budget = self.make(
+            provider=lambda: (client, "whisper-large-v3-turbo") if ready.is_set() else None)
         s.start()
-        t.emit(committed("i1"))
-        t.emit(delta("i1", "hello"))
-        self.assertTrue(wait_until(lambda: partials))
-        s.cancel()
-        count = len(partials)
-        t.emit(delta("i1", " again"))
-        time.sleep(0.1)
-        self.assertEqual(len(partials), count)
-        self.assertTrue(t.closed.is_set())
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertEqual(result.reason, "cancelled")
+        self.push(s, voiced(0.6))
+        time.sleep(0.15)
+        self.assertEqual(api.calls, [])
+        self.assertEqual(budget.usage()["requests_minute"], 0)
+        ready.set()
+        time.sleep(0.3)
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: partials == ["Now ready."]))
 
-    def test_push_audio_never_blocks_and_overflow_forces_fallback(self):
-        gate = threading.Event()
-        t = FakeTransport()
-
-        def factory(_settings):
-            gate.wait(2.0)
-            return t
-        s, _, _ = self.make(t, factory=factory, settings=fast_settings(max_queue_chunks=2))
-        s.start()
-        started = time.monotonic()
-        for _ in range(50):
-            s.push_audio(chunk())
-        self.assertLess(time.monotonic() - started, 0.2)
-        gate.set()
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertEqual(result.reason, "audio dropped")
-
-    def test_slow_transport_does_not_block_capture(self):
-        gate = threading.Event()
-
-        def slow(_transport, message):
-            if message["type"] == "input_audio_buffer.append":
-                gate.wait(2.0)
-        t = FakeTransport(slow)
-        s, _, _ = self.make(t)
-        s.start()
-        started = time.monotonic()
-        for _ in range(100):
-            s.push_audio(chunk(160))
-        self.assertLess(time.monotonic() - started, 0.2)
-        gate.set()
-        s.cancel()
-
-    def test_reconnect_keeps_preview_but_forces_batch_final(self):
-        first = FakeTransport()
-        second = FakeTransport(respond_on_commit(committed("x2", "x1"), completed("x2", "")))
-        transports = [first, second]
-        s, partials, logs = self.make(None, factory=lambda _settings: transports.pop(0))
-        s.start()
-        s.push_audio(chunk())
-        first.emit(committed("a1"))
-        first.emit(completed("a1", "first part"))
-        first.emit(committed("a2", "a1"))
-        first.emit(delta("a2", "lost"))
-        first.drop()
-        self.assertTrue(wait_until(lambda: second.sent))
-        self.assertEqual(second.sent[0]["type"], "session.update")
-        second.emit(committed("x1", None))
-        second.emit(delta("x1", "second part"))
-        self.assertTrue(wait_until(lambda: partials and partials[-1] == "first part second part"))
-        s.push_audio(chunk())
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertEqual(result.reason, "connection interrupted")
-        self.assertIn("reconnecting", logs)
-
-    def test_reconnect_limit_fails_safe(self):
-        first = FakeTransport()
+    def test_provider_exception_never_breaks_session_or_costs_budget(self):
         calls = []
 
-        def factory(_settings):
+        def broken():
             calls.append(1)
-            if len(calls) == 1:
-                return first
-            raise st.TransportClosed("refused")
-        s, _, _ = self.make(None, factory=factory)
+            raise RuntimeError("no client")
+        s, api, partials, _, budget = self.make(provider=broken)
         s.start()
-        s.push_audio(chunk())
-        first.drop()
-        self.assertTrue(wait_until(lambda: len(calls) == 2))
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertEqual(len(calls), 2)
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: calls))
+        self.assertTrue(wait_until(lambda: not budget.in_flight()))
+        self.assertTrue(s.active)
+        self.assertEqual(s.stats()["failed"], 0)
+        self.assertEqual(budget.usage()["requests_minute"], 0)
+        self.assertEqual(budget.cooldown_remaining(), 0.0)
 
-    def test_no_audio_is_not_verified_and_sends_no_commit(self):
-        t = FakeTransport()
-        s, _, _ = self.make(t)
+
+class LifecycleTests(SessionTestCase):
+    def test_stop_before_send_never_calls_groq(self):
+        entered, release = threading.Event(), threading.Event()
+        api = FakeTranscriptions()
+        client = FakeClient(api)
+
+        def slow_provider():
+            entered.set()
+            release.wait(5.0)
+            return client, "whisper-large-v3-turbo"
+        s, _, partials, _, budget = self.make(provider=slow_provider)
         s.start()
-        result = s.finish()
-        self.assertFalse(result.verified)
-        self.assertEqual(result.reason, "empty transcript")
-        self.assertNotIn("input_audio_buffer.commit", t.types())
+        self.push(s, voiced(0.6))
+        self.assertTrue(entered.wait(2.0))
+        s.stop()
+        release.set()
+        self.assertTrue(wait_until(lambda: not budget.in_flight()))
+        self.assertEqual(api.calls, [])
+        self.assertEqual(partials, [])
 
-    def test_finish_is_idempotent(self):
-        t = FakeTransport(respond_on_commit(committed("i1"), completed("i1", "once")))
-        s, _, _ = self.make(t)
+    def test_cancel_suppresses_late_partials(self):
+        gate = threading.Event()
+        s, api, partials, _, _ = self.make(FakeTranscriptions(["late"], gate=gate))
         s.start()
-        s.push_audio(chunk())
-        self.assertIs(s.finish(), s.finish())
-        self.assertEqual(t.types().count("input_audio_buffer.commit"), 1)
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: api.calls))
+        s.cancel()
+        gate.set()
+        s.join(1.0)
+        self.assertEqual(partials, [])
+        self.assertEqual(s.stop_reason, "cancelled")
+        s.push_audio(voiced(0.1))  # harmless after cancel
+        self.assertFalse(s.active)
 
+    def test_idle_session_stops_itself_without_calls(self):
+        s, api, _, _, _ = self.make(settings=fast_settings(idle_timeout=0.2))
+        s.start()
+        self.assertTrue(wait_until(lambda: not s.active))
+        self.assertEqual(s.stop_reason, "idle")
+        self.push(s, voiced(1.0))
+        time.sleep(0.1)
+        self.assertEqual(api.calls, [])
+
+    def test_stopped_session_never_starts(self):
+        s, api, _, _, _ = self.make()
+        s.stop()
+        s.start()
+        self.push(s, voiced(1.0))
+        time.sleep(0.1)
+        self.assertIsNone(s._thread)
+        self.assertEqual(api.calls, [])
+
+    def test_stop_is_idempotent(self):
+        s, _, _, logs, _ = self.make()
+        s.start()
+        s.stop()
+        s.stop()
+        s.cancel()
+        self.assertEqual(s.stop_reason, "stopped")
+        self.assertEqual(sum("preview stopped" in line for line in logs), 1)
+
+    def test_request_cap_per_recording(self):
+        s, api, _, _, _ = self.make(settings=fast_settings(max_requests=2))
+        budget = s._core.budget
+        s.start()
+        for _ in range(4):
+            self.push(s, voiced(0.6))
+            wait_until(lambda: api.calls and not budget.in_flight(), 1.0)
+            time.sleep(0.6)  # past the planner's per-window cadence
+        self.assertTrue(wait_until(lambda: s.stats()["disabled"] == "request limit"))
+        self.assertEqual(len(api.calls), 2)
+
+
+class PriorityTests(SessionTestCase):
+    def test_final_in_flight_defers_previews(self):
+        s, api, partials, _, budget = self.make()
+        with budget.final_priority(10.0):
+            s.start()
+            self.push(s, voiced(0.6))
+            time.sleep(0.2)
+            self.assertEqual(api.calls, [])
+        self.assertTrue(wait_until(lambda: api.calls))
+
+    def test_single_flight_across_sessions(self):
+        gate = threading.Event()
+        shared = st.PreviewBudget()
+        a, api_a, _, _, _ = self.make(FakeTranscriptions(gate=gate), budget=shared)
+        b, api_b, _, _, _ = self.make(FakeTranscriptions(gate=gate), budget=shared)
+        a.start()
+        b.start()
+        self.push(a, voiced(0.6))
+        self.assertTrue(wait_until(lambda: api_a.calls))
+        self.push(b, voiced(0.6))
+        self.assertTrue(wait_until(lambda: b.stats()["denied"] >= 1))
+        self.assertEqual(api_b.calls, [])
+        gate.set()
+
+
+class PrivacyTests(SessionTestCase):
     def test_secret_and_transcript_never_in_logs_or_reprs(self):
-        t = FakeTransport(respond_on_commit(committed("i1"), completed("i1", "private words")))
-        s, _, logs = self.make(t)
+        s, api, partials, logs, _ = self.make(FakeTranscriptions(["private words"]))
         s.start()
-        s.push_audio(chunk())
-        result = s.finish()
-        self.assertTrue(result.verified)
-        visible = " ".join(logs) + repr(s) + repr(s.settings) + str(s.settings) + repr(result)
-        self.assertNotIn(KEY, visible)
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: partials))
+        s.stop()
+        visible = " ".join(logs) + repr(s) + repr(s.settings) + str(s.stats())
+        self.assertNotIn(SECRET, visible)
         self.assertNotIn("private words", visible)
+        window = st.Window(1, 0, 10, R, np.zeros(10, dtype=np.float32))
+        self.assertNotIn("array", repr(window))
 
-
-class GatingTests(unittest.TestCase):
-    def test_streaming_is_opt_in(self):
-        present = lambda _name: object()
-        self.assertEqual(st.availability({}, find_spec=present), "disabled")
-        self.assertIsNone(st.availability(enabled_config(), find_spec=present))
-        self.assertEqual(st.availability(enabled_config(streaming_stt_enabled="yes"), find_spec=present), "disabled")
-        self.assertEqual(st.availability(enabled_config(streaming_stt_provider=""), find_spec=present), "no provider configured")
-        self.assertEqual(st.availability(enabled_config(streaming_stt_provider="groq"), find_spec=present), "unsupported provider")
-        self.assertEqual(st.availability(enabled_config(streaming_stt_api_key="  "), find_spec=present), "no API key configured")
-        self.assertEqual(st.availability(enabled_config(streaming_stt_billing_authorized=False), find_spec=present), "billing not authorized")
-
-    def test_missing_dependency_disables_streaming(self):
-        reason = st.availability(enabled_config(), find_spec=lambda _name: None)
-        self.assertIn("websocket", reason)
-        self.assertIsNone(st.create_session(enabled_config(), find_spec=lambda _name: None))
-
-    def test_create_session_never_builds_transport_when_disabled(self):
-        factory = mock.Mock(side_effect=AssertionError("transport must not be built"))
-        self.assertIsNone(st.create_session({}, transport_factory=factory))
-        self.assertIsNone(st.create_session(
-            enabled_config(streaming_stt_billing_authorized=False), transport_factory=factory))
-        factory.assert_not_called()
-
-    def test_settings_from_config(self):
-        settings = st.settings_from_config(enabled_config(
-            streaming_stt_api_key=f"  {KEY}  ", auto_detect_language=False, language="de",
-            streaming_stt_finalize_timeout_seconds=999,
-        ))
-        self.assertEqual(settings.api_key, KEY)
-        self.assertEqual(settings.language, "de")
-        self.assertEqual(settings.model, "gpt-live-transcribe")
-        self.assertEqual(settings.finalize_timeout, 30.0)
-        self.assertEqual(st.settings_from_config(enabled_config()).language, "")
-
-
-class TranscriptStateTests(unittest.TestCase):
-    def test_items_without_previous_keep_arrival_order(self):
-        state = st.TranscriptState()
-        state.delta("x", "alpha")
-        state.delta("y", "beta")
-        self.assertEqual(state.text(), "alpha beta")
-
-    def test_chain_committed_in_reverse(self):
-        state = st.TranscriptState()
-        state.commit("c", "b", True)
-        state.commit("b", "a", True)
-        state.commit("a", None, True)
-        for item, word in (("a", "1"), ("b", "2"), ("c", "3")):
-            state.complete(item, word)
-        self.assertEqual(state.text(), "1 2 3")
-        self.assertEqual(state.pending(), 0)
+    def test_error_text_from_provider_is_never_logged(self):
+        s, api, _, logs, _ = self.make(FakeTranscriptions(error=StatusError(500)))
+        s.start()
+        self.push(s, voiced(0.6))
+        self.assertTrue(wait_until(lambda: s.stats()["failed"] == 1))
+        self.assertNotIn("private words", " ".join(logs))
+        self.assertIn("preview request failed (error)", logs)
 
 
 if __name__ == "__main__":

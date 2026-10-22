@@ -57,6 +57,22 @@ class WhisperEngine:
                 return
             self._load_local_model_locked()
 
+    def groq_preview_client(self):
+        """Return (client, model) for opt-in live previews, else None.
+
+        Previews reuse exactly the Groq client and model already selected for
+        final dictation: no separate credential, provider or billing route.
+        This never creates a client, loads a model or falls back to local
+        Whisper; previews simply wait until final dictation set Groq up.
+        """
+        if not self.config.get("use_groq", False):
+            return None
+        key = str(self.config.get("groq_api_key") or "").strip()
+        client = self.groq_client
+        if not key or client is None or self.current_groq_key != key:
+            return None
+        return client, str(self.config.get("groq_model") or "whisper-large-v3-turbo")
+
     @staticmethod
     def _suspicious_numeric_hallucination(text, audio_data):
         """Only suppress number-only results when voice activity is absent.

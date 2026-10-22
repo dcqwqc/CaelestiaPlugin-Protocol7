@@ -16,9 +16,9 @@ class AudioRecorder:
         # transcription when recording stops.
         self._recording_chunks = []
         self._chunks_lock = threading.Lock()
-        # Optional non-blocking consumer for opt-in streaming recognition.
-        # The final queue is always filled too, so the batch fallback keeps
-        # the complete recording whatever happens to the live session.
+        # Optional non-blocking consumer for the opt-in live preview. The
+        # final queue is always filled too, so final dictation transcribes
+        # the complete recording whatever happens to the preview.
         self._stream_listener = None
         self.stream = None
         self.volume_level = 0.0
@@ -40,9 +40,10 @@ class AudioRecorder:
                 listener = self._stream_listener
             if listener is not None:
                 try:
+                    # Must only enqueue (put_nowait): no network, no waiting.
                     listener(chunk)
                 except Exception:
-                    # A live-recognition fault must never stall PortAudio.
+                    # A live-preview fault must never stall PortAudio.
                     pass
             # Perceptual voice meter for the Caelestia visualizer. A linear
             # `rms * 10` barely moves for normal speech and then jumps near loud
@@ -108,8 +109,8 @@ class AudioRecorder:
             self.stream.stop()
             self.stream.close()
             self.stream = None
-        # PortAudio has delivered its final buffers; the live session already
-        # received every chunk the final queue below contains.
+        # PortAudio has delivered its final buffers; no further chunk can
+        # reach the live preview once the listener is detached.
         self.detach_stream_listener()
         
         # Collect all audio data from queue

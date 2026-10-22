@@ -1,12 +1,11 @@
-"""Offline integration: recorder -> live session -> ghost job -> insertion.
+"""Offline integration: recorder -> Groq preview -> ghost job -> final -> insert.
 
-No test opens a network connection or touches user state: sockets are
-blocked, history and ghost-job persistence are redirected, and every live
-session uses an in-memory fake transport.
+The live preview is display-only. These tests pin the contract that the
+final always transcribes the complete original recording exactly once per
+attempt, whatever the preview did. No test opens a network connection or
+touches user state: sockets are blocked, history and ghost-job persistence
+are redirected, and Groq is an in-memory fake object.
 """
-import base64
-import json
-import queue
 import socket
 import sys
 import tempfile
@@ -43,6 +42,7 @@ import ghost_jobs
 import streaming_stt as st
 from config import DEFAULT_CONFIG
 
+R = 16000
 _socket_guard = None
 
 
@@ -68,6 +68,13 @@ def wait_until(predicate, timeout=5.0):
     return predicate()
 
 
+def voiced(seconds, amp=0.1, f0=140.0):
+    t = np.arange(int(round(seconds * R))) / R
+    tone = sum((0.6 ** k) * np.sin(2 * np.pi * f0 * (k + 1) * t) for k in range(5))
+    envelope = 0.55 + 0.45 * np.sin(2 * np.pi * 4.0 * t)
+    return (amp * tone * envelope / np.max(np.abs(tone))).astype(np.float32)
+
+
 class FakeUI:
     def __init__(self):
         self.rows = []
@@ -82,15 +89,31 @@ class FakeUI:
     def hide(self):
         pass
 
+    def show(self):
+        pass
+
 
 class FakeWhisper:
-    def __init__(self, text="batch text"):
+    """Final-dictation double: records exactly what the final received."""
+
+    def __init__(self, text="batch text", gate=None):
         self.text = text
+        self.gate = gate
         self.calls = 0
+        self.audio = []
+        self.finals_in_flight = []
+        self.client = None
 
     def transcribe(self, audio):
         self.calls += 1
+        self.audio.append(np.array(audio, copy=True))
+        self.finals_in_flight.append(st.default_budget()._finals_in_flight)
+        if self.gate is not None:
+            self.gate.wait(5.0)
         return self.text
+
+    def groq_preview_client(self):
+        return (self.client, "whisper-large-v3-turbo") if self.client is not None else None
 
 
 class FakeRewriter:
@@ -146,59 +169,37 @@ class FakeApp:
 
 
 class FakeStream:
-    def __init__(self, result=None, error=None, gate=None):
-        self.result = result
-        self.error = error
-        self.gate = gate
-        self.finish_calls = 0
+    """A preview session double holding text the final must never use."""
+
+    def __init__(self, preview="live words that must not be pasted", stop_error=None):
+        self.preview_text = preview
+        self.stop_error = stop_error
+        self.stops = 0
         self.cancelled = threading.Event()
 
-    def finish(self, timeout=None):
-        self.finish_calls += 1
-        if self.gate is not None:
-            self.gate.wait(5.0)
-        if self.cancelled.is_set():
-            return st.StreamingResult(False, "", "cancelled")
-        if self.error is not None:
-            raise self.error
-        return self.result
+    def stop(self):
+        self.stops += 1
+        if self.stop_error is not None:
+            raise self.stop_error
 
     def cancel(self):
         self.cancelled.set()
-        if self.gate is not None:
-            self.gate.set()
 
 
-class FakeTransport:
-    def __init__(self, on_send=None):
-        self.sent = []
-        self.inbox = queue.Queue()
-        self.closed = threading.Event()
-        self.on_send = on_send
+class Transcriptions:
+    def __init__(self, text="Preview words."):
+        self.text = text
+        self.calls = []
 
-    def send(self, text):
-        if self.closed.is_set():
-            raise st.TransportClosed("closed")
-        message = json.loads(text)
-        self.sent.append(message)
-        if self.on_send is not None:
-            self.on_send(self, message)
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"text": self.text}
 
-    def recv(self, timeout):
-        if self.closed.is_set():
-            raise st.TransportClosed("closed")
-        try:
-            return json.dumps(self.inbox.get(timeout=timeout))
-        except queue.Empty:
-            return None
 
-    def close(self):
-        self.closed.set()
-
-    def appended_samples(self):
-        data = b"".join(base64.b64decode(m["audio"]) for m in self.sent
-                        if m["type"] == "input_audio_buffer.append")
-        return len(data) // 2
+class FakeGroqClient:
+    def __init__(self, transcriptions):
+        self.audio = types.SimpleNamespace(transcriptions=transcriptions)
+        self.base_url = "https://api.groq.com/openai/v1"
 
 
 def make_recorder():
@@ -213,51 +214,69 @@ def feed(recorder, n=1600, value=0.1):
     recorder._audio_callback(np.full((n, 1), value, dtype=np.float32), n, None, None)
 
 
+def feed_audio(recorder, audio, chunk=512):
+    for i in range(0, len(audio), chunk):
+        part = audio[i:i + chunk].reshape(-1, 1)
+        recorder._audio_callback(part, len(part), None, None)
+
+
 class GhostTestCase(unittest.TestCase):
     def setUp(self):
         self.history = []
         patcher = mock.patch.object(ghost_jobs, "add_history", self.history.append)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # Fresh process-wide budget: finals recorded by other tests must not
+        # rate-limit this test's previews.
+        budget = mock.patch.object(st, "_DEFAULT_BUDGET", st.PreviewBudget())
+        budget.start()
+        self.addCleanup(budget.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.app = FakeApp()
 
-    def make_jobs(self):
+    def make_jobs(self, app=None):
         with mock.patch.object(ghost_jobs.Path, "home", return_value=Path(self.tmp.name)):
-            jobs = ghost_jobs.GhostJobs(self.app)
-        self.addCleanup(jobs.executor.shutdown, wait=False)
+            jobs = ghost_jobs.GhostJobs(app or self.app)
+        # Drain this test's workers before its patches and tmpdir go away, so
+        # a late job can never write into the next test's history.
+        self.addCleanup(jobs.executor.shutdown, wait=True)
         return jobs
 
     @staticmethod
     def audio():
-        return np.zeros(16000, dtype=np.float32)
+        return np.linspace(-0.5, 0.5, 24000, dtype=np.float32)
 
 
-class GhostStreamingTests(GhostTestCase):
-    def test_verified_stream_skips_batch_and_inserts_once(self):
+class FinalAlwaysFullRecordingTests(GhostTestCase):
+    def test_preview_text_never_replaces_the_final(self):
         jobs = self.make_jobs()
-        stream = FakeStream(st.StreamingResult(True, "live words", "verified"))
-        job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
-        self.assertTrue(wait_until(lambda: job.status == "inserted"))
-        self.assertEqual(self.app.pasted, ["live words"])
-        self.assertEqual(self.app.whisper_engine.calls, 0)
-        self.assertEqual(self.history, ["live words"])
-        self.assertEqual(stream.finish_calls, 1)
-        self.assertIsNone(job.stream)
-
-    def test_unverified_stream_falls_back_to_batch_once(self):
-        jobs = self.make_jobs()
-        stream = FakeStream(st.StreamingResult(False, "", "timeout"))
+        stream = FakeStream()
         job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
         self.assertTrue(wait_until(lambda: job.status == "inserted"))
         self.assertEqual(self.app.pasted, ["batch text"])
-        self.assertEqual(self.app.whisper_engine.calls, 1)
         self.assertEqual(self.history, ["batch text"])
+        self.assertEqual(self.app.whisper_engine.calls, 1)
+        self.assertEqual(stream.stops, 1)
+        self.assertIsNone(job.stream)
 
-    def test_stream_exception_falls_back_to_batch(self):
+    def test_final_receives_the_complete_original_audio(self):
         jobs = self.make_jobs()
-        stream = FakeStream(error=RuntimeError("boom"))
+        audio = self.audio()
+        job = jobs.enqueue(audio, FakeTarget(), stream=FakeStream())
+        self.assertTrue(wait_until(lambda: job.status == "inserted"))
+        np.testing.assert_array_equal(self.app.whisper_engine.audio[0], audio)
+
+    def test_final_runs_with_preview_priority(self):
+        jobs = self.make_jobs()
+        job = jobs.enqueue(self.audio(), FakeTarget(), stream=FakeStream())
+        self.assertTrue(wait_until(lambda: job.status == "inserted"))
+        self.assertGreaterEqual(self.app.whisper_engine.finals_in_flight[0], 1)
+        self.assertEqual(st.default_budget()._finals_in_flight, 0)
+
+    def test_failed_preview_stop_never_prevents_final(self):
+        jobs = self.make_jobs()
+        stream = FakeStream(stop_error=RuntimeError("preview broke"))
         job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
         self.assertTrue(wait_until(lambda: job.status == "inserted"))
         self.assertEqual(self.app.pasted, ["batch text"])
@@ -270,65 +289,102 @@ class GhostStreamingTests(GhostTestCase):
         self.assertEqual(self.app.pasted, ["batch text"])
         self.assertEqual(self.app.whisper_engine.calls, 1)
 
-    def test_cancel_during_finalize_makes_no_batch_call(self):
+    def test_retry_transcribes_full_audio_again_without_preview(self):
+        self.app.whisper_engine.text = ""
         jobs = self.make_jobs()
-        stream = FakeStream(st.StreamingResult(True, "never", "verified"), gate=threading.Event())
-        job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
-        self.assertTrue(wait_until(lambda: stream.finish_calls == 1))
-        self.assertTrue(jobs.cancel(job.id)["ok"])
+        stream = FakeStream()
+        audio = self.audio()
+        job = jobs.enqueue(audio, FakeTarget(), stream=stream)
+        self.assertTrue(wait_until(lambda: job.status == "error"))
+        self.app.whisper_engine.text = "retried"
+        self.assertTrue(jobs.retry(job.id)["ok"])
+        self.assertTrue(wait_until(lambda: job.status == "inserted"))
+        self.assertEqual(stream.stops, 1)
+        self.assertEqual(self.app.whisper_engine.calls, 2)
+        np.testing.assert_array_equal(self.app.whisper_engine.audio[1], audio)
+        self.assertEqual(self.app.pasted, ["retried"])
+
+    def test_too_short_recording_stops_preview_and_makes_no_call(self):
+        jobs = self.make_jobs()
+        stream = FakeStream()
+        job = jobs.enqueue(np.zeros(4000, dtype=np.float32), FakeTarget(), stream=stream)
+        self.assertTrue(wait_until(lambda: job.status == "error"))
+        self.assertEqual(stream.stops, 1)
+        self.assertEqual(self.app.whisper_engine.calls, 0)
+
+
+class CancelFocusSafetyTests(GhostTestCase):
+    def test_dismissed_job_cancels_preview_and_makes_no_final_call(self):
+        jobs = self.make_jobs()
+        stream = FakeStream()
+        with mock.patch.object(jobs.executor, "submit") as submit:
+            job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
+        self.assertTrue(jobs.dismiss_visible())
         self.assertTrue(stream.cancelled.is_set())
-        time.sleep(0.2)
+        jobs._run(submit.call_args.args[1])  # the queued run arrives late
         self.assertEqual(job.status, "cancelled")
         self.assertEqual(self.app.whisper_engine.calls, 0)
         self.assertEqual(self.app.pasted, [])
         self.assertEqual(self.history, [])
 
-    def test_double_control_dismiss_cancels_live_stream(self):
+    def test_cancel_during_final_never_inserts(self):
+        gate = threading.Event()
+        self.app.whisper_engine.gate = gate
         jobs = self.make_jobs()
-        stream = FakeStream(st.StreamingResult(True, "never", "verified"), gate=threading.Event())
-        job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
-        self.assertTrue(wait_until(lambda: stream.finish_calls == 1))
-        self.assertTrue(jobs.dismiss_visible())
-        self.assertTrue(stream.cancelled.is_set())
+        job = jobs.enqueue(self.audio(), FakeTarget(), stream=FakeStream())
+        self.assertTrue(wait_until(lambda: self.app.whisper_engine.calls == 1))
+        self.assertTrue(jobs.cancel(job.id)["ok"])
+        gate.set()
         time.sleep(0.2)
         self.assertEqual(job.status, "cancelled")
-        self.assertEqual(self.app.whisper_engine.calls, 0)
+        self.assertEqual(self.app.whisper_engine.calls, 1)
         self.assertEqual(self.app.pasted, [])
+        self.assertEqual(self.history, [])
+
+    def test_final_timeout_shows_retry_and_late_result_is_dropped(self):
+        gate = threading.Event()
+        self.app.whisper_engine.gate = gate
+        jobs = self.make_jobs()
+        jobs.job_timeout_seconds = 0.2
+        job = jobs.enqueue(self.audio(), FakeTarget(), stream=FakeStream())
+        self.assertTrue(wait_until(lambda: job.status == "error"))
+        gate.set()
+        time.sleep(0.2)
+        self.assertEqual(job.status, "error")
+        self.assertEqual(self.app.pasted, [])
+        self.assertEqual(self.history, [])
 
     def test_focus_change_keeps_ready_chip_without_insert(self):
         jobs = self.make_jobs()
-        stream = FakeStream(st.StreamingResult(True, "live words", "verified"))
-        job = jobs.enqueue(self.audio(), FakeTarget(active=False), stream=stream)
+        job = jobs.enqueue(self.audio(), FakeTarget(active=False), stream=FakeStream())
         self.assertTrue(wait_until(lambda: job.status == "ready"))
         time.sleep(0.1)
         self.assertEqual(self.app.pasted, [])
-        self.assertEqual(job.text, "live words")
-        self.assertEqual(self.history, ["live words"])
+        self.assertEqual(job.text, "batch text")
 
-    def test_enter_queued_during_finalize_sends_once(self):
+    def test_enter_queued_during_final_sends_once(self):
+        gate = threading.Event()
+        self.app.whisper_engine.gate = gate
         self.app.enter_interceptor = FakeHook()
         jobs = self.make_jobs()
-        gate = threading.Event()
-        stream = FakeStream(st.StreamingResult(True, "send me", "verified"), gate=gate)
-        job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
-        self.assertTrue(wait_until(lambda: job.status == "processing" and stream.finish_calls == 1))
+        job = jobs.enqueue(self.audio(), FakeTarget(), stream=FakeStream())
+        self.assertTrue(wait_until(lambda: job.status == "processing" and self.app.whisper_engine.calls == 1))
         self.assertTrue(jobs.queue_send()["send_queued"])
         gate.set()
         self.assertTrue(wait_until(lambda: job.status == "inserted" and self.app.enters == 1))
-        self.assertEqual(self.app.pasted, ["send me"])
-        self.assertEqual(self.app.enters, 1)
+        self.assertEqual(self.app.pasted, ["batch text"])
 
-    def test_retry_after_error_uses_batch_only(self):
-        self.app.whisper_engine.text = ""
+    def test_busy_queue_rejects_and_cancels_preview(self):
+        gate = threading.Event()
+        self.app.whisper_engine.gate = gate
         jobs = self.make_jobs()
-        stream = FakeStream(st.StreamingResult(False, "", "timeout"))
+        for _ in range(4):
+            jobs.enqueue(self.audio(), FakeTarget())
+        stream = FakeStream()
         job = jobs.enqueue(self.audio(), FakeTarget(), stream=stream)
-        self.assertTrue(wait_until(lambda: job.status == "error"))
-        self.app.whisper_engine.text = "retried"
-        self.assertTrue(jobs.retry(job.id)["ok"])
-        self.assertTrue(wait_until(lambda: job.status == "inserted"))
-        self.assertEqual(stream.finish_calls, 1)
-        self.assertEqual(self.app.pasted, ["retried"])
+        self.assertEqual(job.status, "error")
+        self.assertTrue(stream.cancelled.is_set())
+        gate.set()
 
 
 class RecorderTests(unittest.TestCase):
@@ -355,100 +411,156 @@ class RecorderTests(unittest.TestCase):
         feed(recorder)
         self.assertEqual(len(recorder.stop_recording()), 3200)
 
+    def test_preview_queue_pressure_never_loses_final_audio_or_blocks(self):
+        recorder = make_recorder()
+        session = st.GroqChunkSession(st.PreviewSettings(max_queue_chunks=2), client_provider=lambda: None)
+        recorder.attach_stream_listener(session.push_audio)  # worker never started
+        source = voiced(5.0)
+        started = time.monotonic()
+        feed_audio(recorder, source)
+        elapsed = time.monotonic() - started
+        audio = recorder.stop_recording()
+        np.testing.assert_array_equal(audio, source)
+        self.assertGreater(session._overflow_samples, 0)
+        self.assertLess(elapsed, 2.0)
+        session.cancel()
+
 
 class EndToEndTests(GhostTestCase):
-    def session(self, transport_or_factory, timeout=3.0):
+    def test_preview_during_recording_then_final_on_full_audio(self):
+        api = Transcriptions("Preview words.")
+        client = FakeGroqClient(api)
         partials = []
-        factory = transport_or_factory if callable(transport_or_factory) else (lambda _s: transport_or_factory)
-        session = st.StreamingSession(
-            st.StreamingSettings(api_key="test-key", settle_seconds=0.05, finalize_timeout=timeout),
-            input_rate=16000, transport_factory=factory, on_partial=partials.append,
+        session = st.GroqChunkSession(
+            st.PreviewSettings(interval_seconds=4.0, first_preview_seconds=1.0, idle_timeout=30.0),
+            input_rate=R, client_provider=lambda: (client, "whisper-large-v3-turbo"),
+            budget=st.PreviewBudget(), on_partial=partials.append,
         )
         self.addCleanup(session.cancel)
-        return session, partials
-
-    def test_live_final_is_used_and_all_audio_streamed(self):
-        state = {"first": True}
-
-        def server(transport, message):
-            if message["type"] == "input_audio_buffer.append" and state["first"]:
-                state["first"] = False
-                transport.inbox.put({"type": st.EVENT_COMMITTED, "item_id": "item_1", "previous_item_id": None})
-                transport.inbox.put({"type": st.EVENT_DELTA, "item_id": "item_1", "delta": "streamed"})
-            if message["type"] == "input_audio_buffer.commit":
-                transport.inbox.put({"type": st.EVENT_COMPLETED, "item_id": "item_1", "transcript": "streamed words"})
-                transport.inbox.put({"type": "error", "error": {"code": st.ERROR_COMMIT_EMPTY}})
-        transport = FakeTransport(server)
-        session, partials = self.session(transport)
         recorder = make_recorder()
-        for _ in range(3):
-            feed(recorder)
+        feed_audio(recorder, voiced(0.4))
         session.start()
         recorder.attach_stream_listener(session.push_audio)
-        for _ in range(7):
-            feed(recorder)
-        self.assertTrue(wait_until(lambda: partials))
+        feed_audio(recorder, voiced(1.0))
+        self.assertTrue(wait_until(lambda: partials == ["Preview words."]))
         audio = recorder.stop_recording()
-        jobs = self.make_jobs()
-        job = jobs.enqueue(audio, FakeTarget(), stream=session)
-        self.assertTrue(wait_until(lambda: job.status == "inserted"))
-        self.assertEqual(partials[0], "streamed")
-        self.assertEqual(self.app.pasted, ["streamed words"])
-        self.assertEqual(self.app.whisper_engine.calls, 0)
-        self.assertEqual(transport.appended_samples(), len(audio) * 3 // 2)
-
-    def test_connect_failure_uses_batch_once(self):
-        def factory(_settings):
-            raise st.TransportClosed("offline")
-        session, partials = self.session(factory)
-        recorder = make_recorder()
-        session.start()
-        recorder.attach_stream_listener(session.push_audio)
-        for _ in range(10):
-            feed(recorder)
-        audio = recorder.stop_recording()
+        session.stop()
+        calls = len(api.calls)
+        feed_audio(recorder, voiced(6.0))  # no longer recording: nothing reaches Groq
+        session.push_audio(voiced(6.0))
         jobs = self.make_jobs()
         job = jobs.enqueue(audio, FakeTarget(), stream=session)
         self.assertTrue(wait_until(lambda: job.status == "inserted"))
         self.assertEqual(self.app.pasted, ["batch text"])
         self.assertEqual(self.app.whisper_engine.calls, 1)
-        self.assertEqual(partials, [])
+        np.testing.assert_array_equal(self.app.whisper_engine.audio[0], audio)
+        self.assertEqual(len(audio), int(1.4 * R))
+        time.sleep(0.15)
+        self.assertEqual(len(api.calls), calls)
 
-    def test_late_final_after_timeout_never_double_inserts(self):
-        def server(transport, message):
-            if message["type"] == "input_audio_buffer.commit":
-                transport.inbox.put({"type": st.EVENT_COMMITTED, "item_id": "item_1", "previous_item_id": None})
-        transport = FakeTransport(server)
-        session, _ = self.session(transport, timeout=0.3)
-        recorder = make_recorder()
-        session.start()
-        recorder.attach_stream_listener(session.push_audio)
-        for _ in range(10):
-            feed(recorder)
-        audio = recorder.stop_recording()
-        jobs = self.make_jobs()
-        job = jobs.enqueue(audio, FakeTarget(), stream=session)
-        self.assertTrue(wait_until(lambda: job.status == "inserted"))
-        session._dispatch(json.dumps({"type": st.EVENT_COMPLETED, "item_id": "item_1", "transcript": "late"}))
-        time.sleep(0.1)
-        self.assertEqual(session.finish().reason, "timeout")
-        self.assertEqual(self.app.pasted, ["batch text"])
-        self.assertEqual(self.history, ["batch text"])
-
-    def test_default_config_never_creates_session_or_transport(self):
+    def test_default_config_never_creates_session(self):
         self.assertFalse(DEFAULT_CONFIG["streaming_stt_enabled"])
-        self.assertFalse(DEFAULT_CONFIG["streaming_stt_billing_authorized"])
-        self.assertEqual(DEFAULT_CONFIG["streaming_stt_provider"], "")
-        with mock.patch.object(st, "default_transport_factory",
-                               side_effect=AssertionError("no transport by default")):
-            self.assertEqual(st.availability(dict(DEFAULT_CONFIG)), "disabled")
-            self.assertIsNone(st.create_session(dict(DEFAULT_CONFIG)))
+        provider = mock.Mock(side_effect=AssertionError("no client by default"))
+        self.assertEqual(st.availability(dict(DEFAULT_CONFIG)), "disabled")
+        self.assertIsNone(st.create_session(dict(DEFAULT_CONFIG), client_provider=provider))
+        provider.assert_not_called()
 
-    def test_enabled_without_billing_authorization_stays_off(self):
-        config = dict(DEFAULT_CONFIG, streaming_stt_enabled=True,
-                      streaming_stt_provider="openai-realtime", streaming_stt_api_key="k")
-        self.assertEqual(st.availability(config), "billing not authorized")
-        self.assertIsNone(st.create_session(config))
+    def test_legacy_openai_realtime_config_stays_off(self):
+        config = dict(DEFAULT_CONFIG, streaming_stt_enabled=True, use_groq=True, groq_api_key="gsk",
+                      streaming_stt_provider="openai-realtime", streaming_stt_api_key="k",
+                      streaming_stt_billing_authorized=True)
+        self.assertEqual(st.availability(config), "unsupported provider")
+        self.assertIsNone(st.create_session(config, client_provider=lambda: None))
+
+
+def import_main_linux():
+    """Import main_linux with only its unavailable hardware deps stubbed."""
+    stubs = {}
+    try:
+        import hotkey_linux  # noqa: F401
+    except Exception:
+        module = types.ModuleType("hotkey_linux")
+        module.HotkeyListener = object
+        stubs["hotkey_linux"] = module
+    try:
+        import companion.wake_runtime  # noqa: F401
+    except Exception:
+        package = types.ModuleType("companion")
+        module = types.ModuleType("companion.wake_runtime")
+        module.WakeRuntime = object
+        package.wake_runtime = module
+        stubs.update({"companion": package, "companion.wake_runtime": module})
+    with mock.patch.dict(sys.modules, stubs):
+        sys.modules.pop("main_linux", None)
+        import main_linux
+    return main_linux
+
+
+class MainWiringTests(GhostTestCase):
+    def make_app(self, config):
+        main_linux = import_main_linux()
+        self.debug_log = []
+        patcher = mock.patch.object(main_linux, "log_debug", self.debug_log.append)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        app = main_linux.Protocol7App.__new__(main_linux.Protocol7App)
+        app.config = config
+        app.audio_recorder = make_recorder()
+        app.ui_manager = self.app.ui_manager
+        app.whisper_engine = self.app.whisper_engine
+        app.llm_rewriter = FakeRewriter()
+        app.hotkey = types.SimpleNamespace(focus_epoch=lambda: 1, non_enter_focus_epoch=lambda: 1)
+        app.enter_interceptor = None
+        app.is_active = False
+        app.is_processing = False
+        app._dictation_lock = threading.RLock()
+        app._recording_target = None
+        app._stream_session = None
+        app.paste_text = self.app.paste_text
+        app._ghost = self.make_jobs(app)
+        return app
+
+    def test_enabled_preview_uses_final_groq_client_and_stops_with_recording(self):
+        api = Transcriptions("Shown while speaking.")
+        self.app.whisper_engine.client = FakeGroqClient(api)
+        config = dict(DEFAULT_CONFIG, streaming_stt_enabled=True, use_groq=True, groq_api_key="gsk_x")
+        app = self.make_app(config)
+        with mock.patch.object(st, "settings_from_config",
+                               return_value=st.PreviewSettings(first_preview_seconds=1.0, idle_timeout=30.0)):
+            app.is_active = True
+            app._start_stream_session()
+        session = app._stream_session
+        self.assertIsInstance(session, st.GroqChunkSession)
+        feed_audio(app.audio_recorder, voiced(1.2))
+        self.assertTrue(wait_until(lambda: self.app.ui_manager.live == ["Shown while speaking."]))
+        status = app._toggle_ghost("control-stop")
+        self.assertTrue(status["ok"])
+        self.assertFalse(session.active)
+        self.assertIsNone(app._stream_session)
+        self.assertTrue(wait_until(lambda: any(j.status == "ready" for j in app._ghost.jobs.values())))
+        job = next(iter(app._ghost.jobs.values()))
+        self.assertEqual(job.text, "batch text")
+        self.assertEqual(self.app.whisper_engine.calls, 1)
+        self.assertEqual(len(self.app.whisper_engine.audio[0]), int(1.2 * R))
+        self.assertEqual(self.app.ui_manager.live, ["Shown while speaking."])
+        self.assertEqual(len(api.calls), 1)
+        self.assertNotIn("Shown while speaking", " ".join(self.debug_log))
+        self.assertNotIn("gsk_x", " ".join(self.debug_log))
+
+    def test_disabled_preview_creates_nothing(self):
+        app = self.make_app(dict(DEFAULT_CONFIG, use_groq=True, groq_api_key="gsk_x"))
+        app._start_stream_session()
+        self.assertIsNone(app._stream_session)
+        self.assertIsNone(app.audio_recorder._stream_listener)
+
+    def test_partials_from_stale_session_are_ignored(self):
+        app = self.make_app(dict(DEFAULT_CONFIG))
+        app.is_active = True
+        app._stream_session = object()
+        app._on_stream_partial(object(), "stale")
+        app.is_active = False
+        app._on_stream_partial(app._stream_session, "after stop")
+        self.assertEqual(self.app.ui_manager.live, [])
 
 
 if __name__ == "__main__":
