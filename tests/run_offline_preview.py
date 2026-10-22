@@ -38,7 +38,7 @@ if __name__ == '__main__':
         config.HISTORY_FILE = str(pathlib.Path(state) / 'history.json')
         modules = ['tests.test_groq_chunks', 'tests.test_streaming_stt',
                    'tests.test_streaming_integration', 'tests.test_streaming_plugin_config',
-                   'tests.test_preview_corrections', 'tests.test_release_corrections', 'tests.test_ghost_jobs',
+                   'tests.test_preview_corrections', 'tests.test_release_corrections', 'tests.test_review_round1', 'tests.test_ghost_jobs',
                    'tests.test_cloud_dictation', 'tests.test_groq_latency',
                    'tests.test_numeric_dictation', 'tests.test_queue_send',
                    'tests.test_enter_intercept']

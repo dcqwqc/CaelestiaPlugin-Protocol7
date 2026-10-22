@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import time
 
-from streaming_stt import PreviewBudget, FREE_TIER_LIMITS
+from streaming_stt import PreviewBudget, FREE_TIER_LIMITS, DispatchScheduler, PreviewUnavailable
 
 
 class _LedgerLock:
@@ -49,6 +49,7 @@ class _LedgerLock:
                 owner._disabled = state['disabled']
                 owner._first_seen = state['first_seen']
                 owner._finals_in_flight = state['finals']
+                owner._dispatch_epoch = state.get('dispatch_epoch', 0)
             else:
                 owner._first_seen = now
             self.depth = 1
@@ -71,7 +72,7 @@ class _LedgerLock:
                         o._prune(o.clock())
                         state = dict(version=1, events=list(o._events), strikes=list(o._strikes),
                                      cooldown=o._cooldown_until, disabled=o._disabled,
-                                     first_seen=o._first_seen, last_seen=o.clock(), finals=o._finals_in_flight)
+                                     first_seen=o._first_seen, last_seen=o.clock(), finals=o._finals_in_flight, dispatch_epoch=o._dispatch_epoch)
                         db.execute("INSERT OR REPLACE INTO ledger VALUES (1, ?)", (json.dumps(state),))
                         db.commit()
                 finally:
@@ -80,10 +81,64 @@ class _LedgerLock:
             self.local.release()
 
 
+class LedgerDispatchScheduler(DispatchScheduler):
+    """SQLite transaction orders final registration and first-byte transport.
+
+    Lock order is ledger -> local scheduler. Stop only takes the local lock;
+    no blocking network operation is permitted inside dispatch's callable.
+    """
+    def __init__(self, owner):
+        super().__init__()
+        self.owner = owner
+
+    def ticket(self):
+        try:
+            with self.owner._lock:
+                return (super().ticket(), self.owner._dispatch_epoch)
+        except Exception:
+            self.owner._mark_fault()
+            return None
+
+    def dispatch(self, session, epoch, start, **kwargs):
+        called, transport_error = False, None
+        def initiate(**request):
+            nonlocal called, transport_error
+            called = True
+            try:
+                return start(**request)
+            except Exception as exc:
+                # Readiness/HTTP failures are not ledger failures. Commit the
+                # ordering transaction, then propagate outside fault handling.
+                transport_error = exc
+        try:
+            with self.owner._lock:
+                o = self.owner
+                if (epoch is None or not isinstance(epoch, tuple) or
+                        epoch[1] != o._dispatch_epoch or o._finals_in_flight or
+                        o._fault or os.path.exists(o._unsafe_path) or
+                        o._disabled or o.clock() < o._cooldown_until):
+                    raise PreviewUnavailable("shared dispatch revoked")
+                result = super().dispatch(session, epoch[0], initiate, **kwargs)
+        except PreviewUnavailable:
+            raise
+        except Exception as exc:
+            self.owner._mark_fault()
+            if called:
+                # A write may already have escaped before commit failed.
+                # Never classify it as definitely unsent or refund its quota.
+                raise RuntimeError("ledger failed after transport initiation") from exc
+            raise PreviewUnavailable("shared dispatch unavailable") from exc
+        if transport_error is not None:
+            raise transport_error
+        return result
+
+
 class DurablePreviewBudget(PreviewBudget):
     def __init__(self, path, *, clock=time.time):
         # Preview usage <= 40% of this host's half, leaving 60% for finals.
         super().__init__(clock=clock, limits={k: v / 2 for k, v in FREE_TIER_LIMITS.items()}, rpm_cap=4)
+        self._dispatch_epoch = 0
+        self.scheduler = LedgerDispatchScheduler(self)
         self._first_seen = clock()
         self._fault = False
         self._unsafe_path = path + ".unsafe"
@@ -143,6 +198,7 @@ class DurablePreviewBudget(PreviewBudget):
         registered = False
         try:
             with self._lock:
+                self._dispatch_epoch += 1
                 self._finals_in_flight += 1
                 self._events.append((self.clock(), self.billed(seconds), 'final'))
                 registered = True

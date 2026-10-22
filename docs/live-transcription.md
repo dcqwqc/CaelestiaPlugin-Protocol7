@@ -2,7 +2,8 @@
 
 Development candidate on `feature/live-transcription-20261021`. **Release
 blocked; no deployment or provider traffic has been performed.** Tests use
-synthetic audio and fake clients. Real latency, accuracy, billing protection,
+synthetic audio, fake clients and the installed SDK type with mocked TLS.
+Real latency, accuracy, billing protection,
 provider headers and microphone behavior remain unverified.
 
 Previews are display-only overlapping Whisper windows. The complete original
@@ -27,7 +28,8 @@ is insufficient. Backend configuration requires all of the following:
 
 `use_groq: true`, a key, and a selected `groq_model` of
 `whisper-large-v3` or `whisper-large-v3-turbo` are also required. The transport
-checks the allowlist again and permits HTTPS Groq endpoints only. Unsupported
+checks the allowlist again. The production preview adapter accepts only the
+standard `https://api.groq.com/` SDK base URL; custom bases fail closed. Unsupported
 models remain usable by the existing batch path; they cannot create previews.
 Old OpenAI Realtime settings do not enable this feature.
 
@@ -101,28 +103,49 @@ speech may be missed. It gates previews only.
 Segment confidence and known decoder-artifact filtering apply to previews.
 Stable suffix/prefix words and Chinese character overlaps are aligned;
 contained short results never remove later committed words. Emphatic boundary
-repeats are preserved in tested cases. Only the last 8 tokens can change and
+repeats use absolute word timestamps when supplied: a disjoint later word
+is preserved, while a shared word is aligned. No word-specific exceptions
+remain. Without timestamps, ambiguous isolated/repeated-token boundaries
+remain conservative; arbitrary intentional repetition cannot be proved from
+text alone. Only the last 8 tokens can change and
 text is bounded to 300 tokens. Chinese characters count as individual tokens.
 Gaps are marked with an ellipsis. A worker-side 129-tap windowed-sinc low-pass
 filter precedes 48/44.1 kHz downsampling to 16 kHz; capture only queues audio.
 
-## Dispatch and UI consumers — production transport remains blocked
+## Dispatch and UI consumers
 
 Stop/final registration changes a synchronized scheduler epoch. Queued windows
-retain their original epoch and cannot start transport after revocation, even
-if a final has already completed. The scheduler accepts only a nonblocking
-transport-initiation primitive returning a Future. Response waits, encoding,
-ledger work and callbacks happen outside its lock. Stop also avoids the core
-lock used for VAD. Already initiated transport cannot be retracted; its
-reservation remains charged and obsolete responses are ignored.
+retain their original ticket and cannot initiate transport after revocation,
+even if a final has already completed. Each current-version backend sharing
+the host ledger also checks a persisted epoch and final count under the same
+SQLite transaction as its first payload write. Final registration increments
+that epoch in a transaction. Ledger -> local scheduler is the lock order;
+stop takes only the local scheduler lock, never the ledger or VAD lock.
+Different ledgers or mixed old/new backend versions are not coordinated.
 
-**The ordinary synchronous Groq SDK does not implement this primitive.** A
-recording session now refuses to send through that SDK rather than retaining
-the rejected admission-to-HTTP race. No production adapter is implemented in
-this correction. Preview operation is therefore blocked pending transport
-integration and independent HTTP-boundary and multi-process verification.
+The production adapter reuses the selected Groq SDK client's credentials,
+model and standard endpoint. It prepares multipart WAV and performs TLS setup
+on the existing request worker. The first **nonblocking TLS payload write
+attempt** is the dispatch boundary. Encoding, DNS/TCP/TLS setup, readiness
+waits, response reads and callbacks never hold the lifecycle lock. No thread
+launch masquerades as HTTP initiation. TLS setup may occur after revocation,
+but no transcription payload can start then. No automatic retry or redirect
+is performed. Word and segment timestamps are requested in verbose JSON.
+
+TLS can emit ciphertext before returning SSLWantWrite/SSLWantRead. Therefore
+the first guarded write attempt conservatively makes the request already in
+flight, even if no byte count is returned. Subsequent writes finish that same
+request outside lifecycle locks; they are not new requests. Stop/final cannot
+retract already started traffic, and its quota reservation remains charged.
+A ledger commit failure after initiation poisons future previews and never
+refunds the possibly sent request. Obsolete responses cannot update the UI.
+
 The existing full-recording final SDK path remains available with previews off
-or unavailable. A mock start method is not evidence about real HTTP behavior.
+or unavailable. Tests use the installed SDK type, mocked TLS writes and
+responses, lifecycle barriers and separate ledger instances/processes. These
+prove offline wiring and ordering, not live Groq acceptance, billing status,
+production scheduling latency or microphone accuracy. Independent acceptance
+and verified FREE organization eligibility are still release gates.
 
 Partials carry session identity through main_linux to the actual UI consumer.
 The GTK consumer queues to its main loop and checks identity atomically with

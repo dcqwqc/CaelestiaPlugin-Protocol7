@@ -1,7 +1,7 @@
 """Opt-in, display-only live preview from overlapping Groq Whisper windows.
 
-Production previews fail closed until a verified nonblocking transport adapter
-exists. The synchronous Groq SDK remains available only to the batch final.
+Production previews use a worker-side TLS transport with a synchronized,
+nonblocking first-byte send. Batch finals retain the synchronous Groq SDK.
 Offline fake transports exercise the scheduler contract below.
 
 With a supported adapter, provider ``groq-chunks`` periodically sends the most recent ~6 s of speech
@@ -397,7 +397,7 @@ class TextReconciler:
         text = " ".join(self.words)
         return re.sub(r"(?<=[\u3000-\u9fff\uff00-\uffef]) (?=[\u3000-\u9fff\uff00-\uffef])", "", text)
 
-    def add(self, text, *, overlap=False, gap=False):
+    def add(self, text, *, overlap=False, gap=False, boundary_shared=None):
         new = re.findall(r"[\u3040-\u30ff\u3400-\u9fff][、。，！？；：]*|[^\s\u3040-\u30ff\u3400-\u9fff]+", str(text or ""))
         if not new:
             return False
@@ -407,7 +407,10 @@ class TextReconciler:
         elif gap:
             self.words = self.words + ([] if self.words[-1] == self.GAP else [self.GAP]) + new
         elif overlap:
-            self._merge(new)
+            if boundary_shared is False:
+                self._append(new)
+            else:
+                self._merge(new, boundary_shared=boundary_shared)
         else:
             self._append(new)
         self.frozen = max(self.frozen, len(self.words) - self.max_revise)
@@ -417,7 +420,7 @@ class TextReconciler:
             self.frozen = max(1, self.frozen - drop + 1)
         return self.words != before
 
-    def _merge(self, new):
+    def _merge(self, new, *, boundary_shared=None):
         prev = self.words
         low = max(self.frozen, len(prev) - self.search)
         tail = [_norm(w) for w in prev[low:]]
@@ -437,14 +440,15 @@ class TextReconciler:
         # short emphatic repeats: text alone cannot resolve their timing.
         for size in range(min(len(tail), len(head)), 0, -1):
             if tail[-size:] == head[:size] and all(head[:size]):
-                if size == 1 and (len(prev) < 2 or head[0] in {"no", "yes", "oh", "ha"}):
+                if size == 1 and boundary_shared is None and (len(prev) < 2 or
+                        (len(head) > 1 and head[0] == head[1])):
                     continue
                 self.words = prev[:-size] + new
                 return
         # A short contained hypothesis is not evidence of a deletion.
         normalized = [_norm(w) for w in prev]
         whole = [_norm(w) for w in new]
-        ambiguous_repeat = len(whole) == 1 and whole[0] in {"no", "yes", "oh", "ha"}
+        ambiguous_repeat = len(prev) == len(whole) == 1 and boundary_shared is None
         if not ambiguous_repeat and any(normalized[i:i+len(whole)] == whole for i in range(len(prev)-len(whole)+1)):
             return
         best = None
@@ -596,7 +600,8 @@ def groq_transcribe(client, model, wav, *, language="", timeout=4.0, dispatch=No
         # to HTTP, and holding the lifecycle lock over create blocks stop.
         start = getattr(client, "start_preview_transport", None)
         if not callable(start):
-            raise PreviewUnavailable("revocable nonblocking preview transport unavailable")
+            from preview_transport import transcribe_preview
+            return transcribe_preview(client, kwargs, dispatch)
         future = dispatch(start, **kwargs)
         return future.result(timeout=timeout), None
     api = client.audio.transcriptions
@@ -662,16 +667,20 @@ def classify_error(exc):
 class DispatchScheduler:
     """Linearize revocation and *nonblocking transport initiation*.
 
-    start must initiate the request before returning a Future, without waiting
-    for its response. An ordinary synchronous SDK create is NOT this contract.
-    Production clients without that primitive fail closed for preview only.
-    Never hold this lock during encoding, ledger I/O, callbacks or Future.result.
+    start attempts a nonblocking first payload write and returns immediately;
+    test adapters may instead return a response Future. A synchronous SDK
+    create is not this contract. The production adapter performs its response
+    wait outside this lock, as do encoding, ledger I/O and UI callbacks.
     Epoch changes revoke even requests queued before a final that already ended.
     """
     def __init__(self):
         self.lock = threading.Lock()
         self.epoch = 0
         self.finals = 0
+
+    def ticket(self):
+        with self.lock:
+            return self.epoch
 
     def revoke(self, session=None, final_delta=0, reason="stopped"):
         with self.lock:
@@ -916,6 +925,7 @@ class PreviewCore:
                       "denied": 0, "failed": 0, "discarded": 0, "overflows": 0}
         self._log = log
         self._last_denial = ""
+        self._last_word_span = None
 
     @property
     def text(self):
@@ -996,7 +1006,28 @@ class PreviewCore:
         if not text:
             self.stats["filtered"] += 1
             return None
-        if not self.reconciler.add(text, overlap=window.overlap, gap=window.gap):
+        # Groq word times are relative to each window; compare in recording
+        # coordinates. Disjoint intervals establish intentional repetition.
+        words = _field(result, "words") or []
+        spans = []
+        for word in words:
+            start = _number(_field(word, "start"), None)
+            end = _number(_field(word, "end"), None)
+            if start is not None and end is not None and 0 <= start < end <= window.duration + .1:
+                spans.append((window.start / window.rate + start, window.start / window.rate + end))
+        shared = None
+        if spans and self._last_word_span:
+            a, b = self._last_word_span, spans[0]
+            shared = min(a[1], b[1]) > max(a[0], b[0])
+            # Only a matching boundary token can use this evidence. Earlier
+            # multiword overlap may legitimately start before the last token.
+            if b[1] <= a[0]:
+                shared = None
+        changed = self.reconciler.add(text, overlap=window.overlap, gap=window.gap,
+                                      boundary_shared=shared)
+        if spans and (self._last_word_span is None or spans[-1][1] >= self._last_word_span[1]):
+            self._last_word_span = spans[-1]
+        if not changed:
             return None
         self.stats["published"] += 1
         return self.reconciler.text
@@ -1134,8 +1165,7 @@ class GroqChunkSession:
                         self._core.feed(chunk)
                         self._consumed_position = position + len(chunk)
                     busy = self._request_thread is not None and self._request_thread.is_alive()
-                    with self._core.budget.scheduler.lock:
-                        epoch = self._core.budget.scheduler.epoch
+                    epoch = self._core.budget.scheduler.ticket()
                     plan = None if busy else self._core.next_window(now)
                     if plan is not None:
                         self._request_thread = threading.Thread(
